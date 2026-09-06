@@ -1,0 +1,58 @@
+---
+
+# Единственное место, где проект проверяется: CI намеренно нет, всё гоняется
+# на машине разработчика перед коммитом.
+#
+# Как пользоваться:
+#   make hooks                       # установить хук в .git/hooks/pre-commit
+#   pre-commit run --all-files       # прогнать проверки вручную
+#   pre-commit uninstall             # отключить автозапуск
+#   git commit --no-verify -m "msg"  # пропустить проверки для одного коммита
+
+repos:
+  - repo: local
+    hooks:
+      - id: secrets-check
+        name: Проверка, что секреты зашифрованы Ansible Vault
+        entry: make secrets-check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: yamllint
+        name: yamllint
+        entry: python -X utf8 -m yamllint -s
+        language: python
+        additional_dependencies: [yamllint==1.32.0]
+        # Шаблоны .example проверяем тоже: сломанный шаблон ломает make init,
+        # а заметно это станет только у следующего пользователя.
+        files: \.(yaml|yml)(\.example)?$
+        # Зашифрованный vault — не YAML, а строка base64.
+        exclude: /vault\.yaml$
+
+      # Ловит то, чего не видят ни yamllint, ни --syntax-check: обращение к полю,
+      # которого в сухом прогоне нет, задачи без changed_when, устаревшие модули.
+      # Живёт в отдельном окружении: в .venv его ставить нельзя, он тянет за собой
+      # несовместимый ansible-core. Настройки — в .ansible-lint.
+      - id: ansible-lint
+        name: ansible-lint
+        entry: ansible-lint site.yaml
+        language: python
+        additional_dependencies: [ansible-lint==26.8.0]
+        pass_filenames: false
+        files: ^(roles/.*|site\.yaml|group_vars/.*|host_vars/.*)$
+
+  # Замечания уровня info (кавычки вокруг заведомо безопасных переменных)
+  # только шумят, поэтому порог — warning.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: [-S, warning]

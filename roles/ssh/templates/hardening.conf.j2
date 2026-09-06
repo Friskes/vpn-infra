@@ -1,0 +1,51 @@
+# Файл создаётся Ansible (роль ssh), править вручную нет смысла.
+
+{% if ssh_disable_password %}
+# Вход только по ключу. Сервер круглосуточно перебирают ботнеты — при включённом
+# пароле это вопрос времени и длины пароля.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+{% else %}
+# Пароль ещё разрешён: сначала убедитесь, что вход по ключу работает,
+# затем поставьте ssh_disable_password: true и разверните роль снова.
+PasswordAuthentication yes
+PermitRootLogin {{ ssh_permit_root_login }}
+{% endif %}
+
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+
+# Кому вообще можно входить. Других учёток на сервере быть не должно.
+AllowUsers {{ ssh_allow_users }}
+
+{% if not ssh_allow_tcp_forwarding %}
+# Проброс закрыт целиком, кроме локального (-L) на loopback-админки: наружу они не
+# смотрят, и первый вход, пока VPN ещё нет, идёт именно через него. Прежняя дыра
+# (учётка tunnel с общим паролем открывала админку) закрыта иначе — пароль отключён,
+# учётка удалена, а PermitOpen пускает -L только на эти адреса и только root по ключу.
+# Список ровно по включённым сервисам: лишний порт здесь — лишний путь внутрь.
+AllowTcpForwarding local
+# Пустой список (нода без loopback-админок) даёт PermitOpen none — без аргумента
+# sshd не стартует вовсе.
+PermitOpen {{ ssh_permit_open | map('regex_replace', '^', '127.0.0.1:') | join(' ') if ssh_permit_open | length > 0 else 'none' }}
+# PermitOpen ограничивает только TCP: без этих двух строк остался бы проброс
+# unix-сокетов, а через него — сокет докера, то есть root в обход всего прочего.
+AllowStreamLocalForwarding no
+PermitListen none
+AllowAgentForwarding no
+GatewayPorts no
+PermitTunnel no
+{% endif %}
+X11Forwarding no
+
+MaxAuthTries {{ ssh_max_auth_tries }}
+LoginGraceTime {{ ssh_login_grace_time }}
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Убирает "Ubuntu-3ubuntu13.18" из приветствия: по нему сканеры определяют
+# не только дистрибутив, но и уровень обновлений — то есть какие дыры не закрыты.
+# Версию самого OpenSSH так не спрятать, она часть протокола.
+DebianBanner no
+

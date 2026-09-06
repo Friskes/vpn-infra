@@ -1,0 +1,200 @@
+---
+# Длина, а не просто непустота: у панели нет ни счётчика попыток, ни задержки,
+# а её API отдаёт ключи всех клиентов. Заглушка из шаблона тоже не проходит.
+- name: Проверить пароль админки WireGuard
+  ansible.builtin.assert:
+    that:
+      - wireguard_admin_password | length >= 20
+      - "'Замените' not in wireguard_admin_password"
+    fail_msg: >-
+      Заполните vault_wireguard_admin_password в group_vars/all/vault.yaml —
+      не меньше 20 символов и не заглушка из шаблона. Проще всего: make init.
+    quiet: true
+  when: wireguard_enabled | bool
+
+# В сухом прогоне на свежем сервере docker ещё не установлен, и модули community.docker
+# упали бы. Проверяем по сокету демона: на рабочем сервере он есть всегда, поэтому
+# make check по-прежнему показывает, что изменится в контейнере.
+- name: Проверить, доступен ли Docker
+  ansible.builtin.stat:
+    path: /var/run/docker.sock
+  register: wireguard_docker_socket
+
+- name: Развернуть WireGuard
+  when: wireguard_enabled | bool
+  block:
+    - name: Создать каталог конфигурации wg-easy
+      ansible.builtin.file:
+        path: "{{ wireguard_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # Аварийный переезд: разворачиваем ключ сервера и список клиентов из бэкапа ДО старта
+    # контейнера — тогда конфиги, которые уже у людей на руках, продолжают работать.
+    # Существующее состояние не трогаем (creates): случайный запуск не затрёт рабочий сервер.
+    - name: Восстановить состояние wg-easy из бэкапа
+      ansible.builtin.unarchive:
+        src: "{{ wireguard_restore_src }}"
+        dest: "{{ wireguard_config_dir }}"
+        owner: root
+        group: root
+        creates: "{{ wireguard_config_dir }}/wg0.json"
+      when:
+        - wireguard_restore_src | length > 0
+        - not ansible_check_mode
+
+    # Соль bcrypt случайная, поэтому хэш считается один раз и кэшируется: иначе каждый
+    # прогон давал бы новый PASSWORD_HASH и пересоздавал работающий контейнер.
+    - name: Прочитать хэш пароля, сохранённый прошлым прогоном
+      ansible.builtin.slurp:
+        src: "{{ wireguard_hash_cache }}"
+      register: wireguard_cached_hash
+      failed_when: false
+      no_log: true
+
+    # Пароль подаётся на stdin. Ни argv, ни environment не подходят: Ansible клеит
+    # переменные окружения префиксом к самой команде, и с pipelining они оседают в
+    # /proc/<pid>/cmdline, доступном любой локальной учётке — в том числе тем, под
+    # которыми работают демоны, разбирающие трафик из интернета.
+    - name: Сгенерировать bcrypt-хэш пароля админки через wgpw
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - -i
+          - --entrypoint
+          - sh
+          - "{{ wireguard_image }}"
+          - -c
+          - read -r pass; wgpw "$pass"
+        stdin: "{{ wireguard_admin_password }}"
+        stdin_add_newline: true
+      register: wireguard_wgpw
+      changed_when: true
+      check_mode: false
+      no_log: true
+      when:
+        - wireguard_cached_hash.content is not defined
+        - wireguard_docker_socket.stat.exists
+
+    # wgpw печатает строку вида  PASSWORD_HASH='$2b$12$....'  — вытаскиваем сам хэш по форме bcrypt.
+    - name: Зафиксировать итоговый хэш пароля
+      ansible.builtin.set_fact:
+        wireguard_password_hash: >-
+          {{ (wireguard_cached_hash.content | b64decode | trim)
+             if wireguard_cached_hash.content is defined
+             else (wireguard_wgpw.stdout | default('')
+                   | regex_search('\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]+') | default('', true)) }}
+      no_log: true
+
+    - name: Убедиться, что хэш получен и похож на bcrypt
+      ansible.builtin.assert:
+        that: wireguard_password_hash | regex_search('^\$2[aby]\$[0-9]{2}\$')
+        fail_msg: >-
+          Не удалось получить bcrypt-хэш. Проверьте, что образ {{ wireguard_image }}
+          скачивается и пароль в vault не пуст.
+        quiet: true
+      # Без докера хэш посчитать нечем — на свежем сервере проверку делает реальный прогон.
+      when: wireguard_docker_socket.stat.exists
+
+    - name: Сохранить хэш пароля для идемпотентности
+      ansible.builtin.copy:
+        content: "{{ wireguard_password_hash }}"
+        dest: "{{ wireguard_hash_cache }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: wireguard_password_hash | length > 0
+
+    # Отпечаток пароля в имени файла: при каждой смене пароля остаётся прежний кэш.
+    # Чистим все, кроме актуального, чтобы они не копились в /root.
+    - name: Найти устаревшие кэши хэша от прежних паролей
+      ansible.builtin.find:
+        paths: /root
+        hidden: true
+        patterns: ".wg-easy.hash-*"
+        excludes: "{{ wireguard_hash_cache | basename }}"
+      register: wireguard_old_hashes
+      when: not ansible_check_mode
+
+    - name: Удалить устаревшие кэши хэша
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ wireguard_old_hashes.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: not ansible_check_mode
+
+    # Образ тянем ДО пересоздания контейнера: docker_container сначала удаляет старый
+    # и только потом создаёт новый, и скачивание внутри этого окна растягивало бы простой
+    # VPN на время ответа реестра (а при недоступном ghcr.io оставляло бы сервис лежать).
+    - name: Скачать образ wg-easy заранее
+      community.docker.docker_image_pull:
+        name: "{{ wireguard_image }}"
+        pull: not_present
+      when: wireguard_docker_socket.stat.exists
+
+    - name: Запустить контейнер wg-easy
+      community.docker.docker_container:
+        name: "{{ wireguard_container_name }}"
+        image: "{{ wireguard_image }}"
+        state: started
+        restart_policy: unless-stopped
+        # Бинд у поднятого руками контейнера — без суффикса :rw, поэтому тома не сверяем.
+        # image_name_mismatch намеренно НЕ ставим: иначе смена wireguard_image (бамп
+        # версии, security-фикс) молча не применилась бы. Первый прогон после этой правки
+        # один раз пересоздаст контейнер (короткий разрыв VPN) — делайте его в окно.
+        comparisons:
+          volumes: ignore
+          # Строго — иначе лишний CAP_SYS_MODULE у контейнера не считается расхождением
+          # и остаётся висеть, хотя в роли его уже нет.
+          capabilities: strict
+        env:
+          LANG: "{{ wireguard_lang }}"
+          WG_HOST: "{{ wireguard_host }}"
+          PASSWORD_HASH: "{{ wireguard_password_hash }}"
+          PORT: "{{ wireguard_admin_port | string }}"
+          WG_PORT: "{{ wireguard_vpn_port | string }}"
+          WG_PERSISTENT_KEEPALIVE: "{{ wireguard_persistent_keepalive | string }}"
+          WG_POST_UP: "{{ wireguard_post_up }}"
+        volumes:
+          - "{{ wireguard_config_dir }}:/etc/wireguard"
+        ports:
+          - "{{ wireguard_vpn_port }}:{{ wireguard_vpn_port }}/udp"
+          - "{{ wireguard_admin_publish }}"
+        # Пустой host IP оставляет привязку и на IPv4, и на IPv6; 0.0.0.0 обрезал бы до IPv4.
+        default_host_ip: ""
+        # Префикс CAP_ обязателен: docker CLI нормализует возможности именно так, и без него
+        # модуль видит несуществующую разницу с контейнером, поднятым руками.
+        capabilities:
+          - CAP_NET_ADMIN
+        sysctls:
+          net.ipv4.conf.all.src_valid_mark: "1"
+          net.ipv4.ip_forward: "1"
+      when: wireguard_docker_socket.stat.exists
+
+    - name: Убедиться, что wg-easy поднялся
+      community.docker.docker_container_info:
+        name: "{{ wireguard_container_name }}"
+      register: wireguard_state
+      until: wireguard_state.container.State.Running | default(false)
+      retries: 6
+      delay: 5
+      when: not ansible_check_mode
+
+# Контейнер гасим, но каталог /root/.wg-easy с ключами и клиентами оставляем на месте:
+# обратное включение поднимет VPN как был, с теми же конфигами на руках у людей.
+- name: Остановить wg-easy, если он выключен
+  community.docker.docker_container:
+    name: "{{ wireguard_container_name }}"
+    state: stopped
+  when:
+    - not wireguard_enabled | bool
+    - wireguard_docker_socket.stat.exists
+    - not ansible_check_mode
+  failed_when: false

@@ -1,0 +1,24 @@
+---
+# not ansible_check_mode: в сухом прогоне на свежем сервере юнитов ещё нет, и обращение
+# к ним уронило бы весь make check. Перезапускать что-либо сухой прогон и не должен.
+- name: Restart slipstream
+  ansible.builtin.systemd_service:
+    name: slipstream
+    state: restarted
+    daemon_reload: true
+  when:
+    - slipstream_enabled | bool
+    - not ansible_check_mode
+
+- name: Restart 3proxy
+  ansible.builtin.systemd_service:
+    name: 3proxy
+    state: restarted
+    daemon_reload: true
+  when:
+    - slipstream_enabled | bool
+    - not ansible_check_mode
+
+- name: Reload sysctl for slipstream
+  ansible.builtin.command: sysctl --system
+  changed_when: true

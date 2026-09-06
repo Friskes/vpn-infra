@@ -1,0 +1,59 @@
+---
+# false — VPN на этом сервере не разворачивается, уже поднятый контейнер гасится.
+# Каталог с ключами и клиентами при этом остаётся: обратное включение поднимет
+# всё как было, конфиги на руках у людей продолжат работать.
+wireguard_enabled: true
+
+# v15 переписан на веб-мастер настройки и НАМЕРЕННО падает при заданном PASSWORD_HASH,
+# поэтому сценарий с WG_HOST / PASSWORD_HASH держится только на v14.
+wireguard_image: "ghcr.io/wg-easy/wg-easy:14"
+
+wireguard_container_name: "wg-easy"
+wireguard_config_dir: "/root/.wg-easy"
+wireguard_lang: "ru"
+wireguard_admin_port: 51821
+wireguard_vpn_port: 51820
+
+# Куда подключаются клиенты. По умолчанию адрес сервера, но лучше задать имя
+# в host_vars: тогда при переезде достаточно поменять A-запись, а конфиги,
+# которые уже у людей на руках, продолжат работать.
+wireguard_host: "{{ server_ip }}"
+
+# Секунды между keepalive-пакетами клиента; попадает в PersistentKeepalive скачиваемого
+# конфига. У wg-easy тут 0 — выключено, и на сотовых сетях это ломает связь: оператор
+# закрывает UDP-маппинг за минуту простоя, сервер больше не достучится до клиента, и
+# долгие сессии (SSH, удалёнка) рвутся, пока телефон сам не пошлёт пакет. Правкой файла
+# на руках это лечили каждый раз заново — проще выдавать конфиги уже готовыми.
+wireguard_persistent_keepalive: 25
+
+# Админка публикуется только на loopback: снаружи её нет, вход — через SSH-проброс.
+# Открыть наружу (не надо): "{{ wireguard_admin_port }}:{{ wireguard_admin_port }}/tcp"
+wireguard_admin_publish: "127.0.0.1:{{ wireguard_admin_port }}:{{ wireguard_admin_port }}/tcp"
+
+# Правила, которые wg-easy ставит при поднятии интерфейса. Первые четыре — его
+# собственные, дальше наши запреты; кастомный WG_POST_UP заменяет дефолтный
+# целиком, поэтому дефолт приходится повторять.
+#
+# Зачем запреты. Панель слушает 0.0.0.0 внутри контейнера, а wg0 живёт в том же
+# сетевом пространстве — значит любой, кому выдан конфиг, открывал http://10.8.0.1:51821
+# и упирался только в пароль. Защиты от перебора у wg-easy нет вовсе, а
+# GET /api/wireguard/backup отдаёт ключи всех клиентов разом. Второе правило
+# закрывает docker-сети: через них из туннеля достижима панель Xray на соседнем
+# контейнере. Оба стоят до штатного ACCEPT — порядок в цепочке решает.
+wireguard_post_up: >-
+  iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE;
+  iptables -A INPUT -p udp -m udp --dport {{ wireguard_vpn_port }} -j ACCEPT;
+  iptables -A INPUT -i wg0 -p tcp --dport {{ wireguard_admin_port }} -j REJECT;
+  iptables -A FORWARD -i wg0 -d 172.16.0.0/12 -j REJECT;
+  iptables -A FORWARD -i wg0 -j ACCEPT;
+  iptables -A FORWARD -o wg0 -j ACCEPT;
+
+wireguard_admin_password: ""
+
+# Путь к архиву с состоянием wg-easy на локальном ПК (снимается make backup). Задаётся
+# только при переезде на новый сервер: make deploy HOST=vpn2 ARGS="-e wireguard_restore_src=..."
+# Разворачивается до старта контейнера и только на сервере, где своего состояния ещё нет.
+wireguard_restore_src: ""
+
+# Отпечаток пароля в имени файла: сменится пароль — кэш не найдётся и хэш пересчитается.
+wireguard_hash_cache: "/root/.wg-easy.hash-{{ wireguard_admin_password | hash('sha256') | truncate(16, true, '') }}"

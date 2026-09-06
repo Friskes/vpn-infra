@@ -1,0 +1,106 @@
+---
+# Зачем проверка — объяснено в roles/wireguard/tasks/main.yaml.
+- name: Проверить, доступен ли Docker
+  ansible.builtin.stat:
+    path: /var/run/docker.sock
+  register: rustdesk_docker_socket
+
+- name: Развернуть серверы RustDesk
+  when: rustdesk_enabled | bool
+  block:
+    - name: Создать каталог данных RustDesk
+      ansible.builtin.file:
+        path: "{{ rustdesk_data_dir }}"
+        state: directory
+        mode: "0750"
+
+    # Образ тянем ДО пересоздания контейнеров: docker_container сначала удаляет старый
+    # и только потом создаёт новый, и скачивание внутри этого окна растягивало бы простой
+    # на время ответа реестра (а при недоступном реестре оставляло бы сервис лежать).
+    - name: Скачать образ RustDesk заранее
+      community.docker.docker_image_pull:
+        name: "{{ rustdesk_image }}"
+        pull: not_present
+      when: rustdesk_docker_socket.stat.exists
+
+    # Сеть host обязательна на Linux: серверы видят реальный IP клиента (нужно для NAT traversal).
+    # Порядок аргументов важен: модуль сравнивает команду как список, и перестановка
+    # -r и -k читается как изменение — работающий контейнер пересоздался бы впустую.
+    - name: Запустить серверы RustDesk
+      community.docker.docker_container:
+        name: "{{ item.name }}"
+        image: "{{ rustdesk_image }}"
+        command: "{{ item.command }}"
+        state: started
+        restart_policy: unless-stopped
+        network_mode: host
+        # Бинд у поднятых руками контейнеров — без суффикса :rw, поэтому тома не сверяем.
+        # image_name_mismatch намеренно НЕ ставим: иначе бамп rustdesk_image (напр.
+        # security-фикс) молча не применился бы. Первый прогон после этой правки один раз
+        # пересоздаст hbbs/hbbr (короткий разрыв удалёнки, не VPN) — некритично.
+        comparisons:
+          volumes: ignore
+          capabilities: strict
+        # Порты RustDesk выше 1024, привилегии контейнеру не нужны вовсе.
+        # Остальные демоны из интернета тут работают под ограниченными учётками —
+        # этот жил с полным набором возможностей и правом их повышать.
+        cap_drop:
+          - ALL
+        security_opts:
+          - "no-new-privileges:true"
+        volumes:
+          - "{{ rustdesk_data_dir }}:/root"
+      loop:
+        - name: hbbr
+          command: "hbbr -k {{ rustdesk_key }}"
+        - name: hbbs
+          command: "hbbs{{ ' -r ' + rustdesk_relay_servers if rustdesk_relay_servers else '' }} -k {{ rustdesk_key }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: rustdesk_docker_socket.stat.exists
+
+    - name: Убедиться, что серверы RustDesk поднялись
+      community.docker.docker_container_info:
+        name: "{{ item }}"
+      register: rustdesk_state
+      until: rustdesk_state.container.State.Running | default(false)
+      retries: 6
+      delay: 5
+      loop: [hbbr, hbbs]
+      when: not ansible_check_mode
+
+    - name: Дождаться генерации публичного ключа сервера
+      ansible.builtin.wait_for:
+        path: "{{ rustdesk_data_dir }}/id_ed25519.pub"
+        timeout: 60
+      when: not ansible_check_mode
+
+    - name: Скачать публичный ключ RustDesk на локальный ПК
+      ansible.builtin.fetch:
+        src: "{{ rustdesk_data_dir }}/id_ed25519.pub"
+        dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/id_ed25519.pub"
+        flat: true
+      when: not ansible_check_mode
+
+# Сервис выключен — гасим контейнеры, но не удаляем: данные и ключ сервера остаются
+# на месте, обратное включение поднимет всё как было. Порты в ufw роль firewall
+# уже не откроет, а открытые прежде правила ufw принципиально не удаляются — убрать
+# их руками: ufw delete allow 21115:21117/tcp
+- name: Узнать, остались ли контейнеры RustDesk
+  community.docker.docker_container_info:
+    name: "{{ item }}"
+  loop: [hbbr, hbbs]
+  register: rustdesk_existing
+  when:
+    - not rustdesk_enabled | bool
+    - rustdesk_docker_socket.stat.exists
+    - not ansible_check_mode
+
+- name: Остановить серверы RustDesk
+  community.docker.docker_container:
+    name: "{{ item.item }}"
+    state: stopped
+  loop: "{{ rustdesk_existing.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.exists | default(false)

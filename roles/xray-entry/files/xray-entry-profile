@@ -1,0 +1,24 @@
+#!/bin/sh
+# Печатает готовую vless://-ссылку для импорта в клиент (Happ, v2rayNG, v2rayN).
+# Все значения берутся из сгенерированных на сервере файлов — ключи в репозитории
+# не хранятся. Клиенту нужен Xray-core ≥ 26.3.27, иначе Vision не заведётся.
+set -eu
+
+CONF=/etc/xray-entry
+PUBKEY_FILE="$CONF/public.key"
+UUID_FILE="$CONF/client.uuid"
+SID_FILE="$CONF/short.id"
+CFG="$CONF/config.json"
+
+[ -f "$PUBKEY_FILE" ] || { echo "Нет $PUBKEY_FILE — разверните роль xray-entry"; exit 1; }
+
+PBK=$(cat "$PUBKEY_FILE")
+UUID=$(cat "$UUID_FILE")
+SID=$(cat "$SID_FILE")
+# Порт и SNI читаем из самого конфига, чтобы профиль не разошёлся с сервисом.
+PORT=$(grep -m1 '"port"' "$CFG" | grep -oE '[0-9]+')
+SNI=$(grep -m1 'serverNames' "$CFG" | grep -oE '"[^"]+"\]' | tr -d '"]')
+# Внешний адрес — тот, с которого нода ходит в интернет.
+IP=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' | head -1)
+
+echo "vless://${UUID}@${IP}:${PORT}?type=tcp&security=reality&pbk=${PBK}&fp=chrome&sni=${SNI}&sid=${SID}&flow=xtls-rprx-vision#entry-$(hostname)"

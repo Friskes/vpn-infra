@@ -1,0 +1,19 @@
+---
+# false — сервис на этом сервере не разворачивается, а уже поднятые контейнеры гасятся.
+# Порты 21115-21117 при этом не открываются: их публичность видна сканерам и по имени
+# сервиса выдаёт, что за машина.
+rustdesk_enabled: true
+
+# 1.1.16 закрывает неаутентифицированный UDP punch-hole, пригодный для DDoS-амплификации.
+rustdesk_image: "rustdesk/rustdesk-server:1.1.16"
+rustdesk_data_dir: "/root/rustdesk/data"
+
+# "_" = форсировать шифрование автоматически сгенерированным ключом (id_ed25519).
+rustdesk_key: "_"
+
+rustdesk_id_port: 21116
+rustdesk_relay_port: 21117
+rustdesk_nat_test_port: 21115
+
+# rustdesk_relay_servers задаётся в group_vars/all/vars.yaml.
+rustdesk_relay_servers: ""

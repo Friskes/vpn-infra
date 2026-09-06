@@ -1,0 +1,7 @@
+---
+# Именно reload, а не restart: перезапуск рвёт текущее соединение ansible,
+# и при ошибке в конфиге можно остаться снаружи.
+- name: Reload sshd
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded

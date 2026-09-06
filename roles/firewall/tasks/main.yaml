@@ -1,0 +1,67 @@
+---
+# ufw ставит роль common, поэтому в сухом прогоне на свежем сервере его ещё нет:
+# без этой проверки make check падал бы перед самым первым развёртыванием.
+- name: Проверить, установлен ли ufw
+  ansible.builtin.stat:
+    path: /usr/sbin/ufw
+  register: firewall_binary
+
+- name: Сообщить, что правила файрвола в этом прогоне не проверялись
+  ansible.builtin.debug:
+    msg: >-
+      ufw ещё не установлен (его ставит роль common), поэтому правила файрвола
+      пропущены. Боевой прогон настроит их сам.
+  when: not firewall_binary.stat.exists
+
+# Порядок важен: ufw включается последней задачей, поэтому все разрешения,
+# включая SSH, успевают примениться до смены политики на deny.
+- name: Настроить правила и политики ufw
+  when: firewall_binary.stat.exists
+  block:
+    - name: Разрешить SSH
+      community.general.ufw:
+        rule: allow
+        port: "{{ firewall_ssh_port | string }}"
+        proto: tcp
+
+    - name: Разрешить нужные TCP-порты
+      community.general.ufw:
+        rule: allow
+        port: "{{ item | string }}"
+        proto: tcp
+      loop: "{{ firewall_allowed_tcp_ports }}"
+
+    - name: Разрешить нужные UDP-порты
+      community.general.ufw:
+        rule: allow
+        port: "{{ item | string }}"
+        proto: udp
+      loop: "{{ firewall_allowed_udp_ports }}"
+
+    - name: Проверить текущие политики ufw
+      ansible.builtin.command: ufw status verbose
+      register: firewall_status
+      changed_when: false
+      check_mode: false
+      # Дальше вывод разбирается по английским подстрокам ("allow (outgoing)" и т.п.).
+      # ufw локализуется, а LANG/LC_* доезжают с ПК через SendEnv — под русской
+      # локалью подстроки не нашлись бы, и guard дёргал бы stop/start файрвола каждый прогон.
+      environment:
+        LC_ALL: C
+
+    # Модуль выполняет "ufw default" безусловно, а ufw при этом делает stop/start файрвола.
+    # Поэтому трогаем политики, только если они реально отличаются от нужных.
+    - name: Разрешить весь исходящий трафик по умолчанию
+      community.general.ufw:
+        direction: outgoing
+        policy: allow
+      when: "'allow (outgoing)' not in firewall_status.stdout"
+
+    - name: Запретить входящий по умолчанию и включить ufw
+      community.general.ufw:
+        state: "{{ 'enabled' if firewall_enabled else 'disabled' }}"
+        direction: incoming
+        policy: deny
+      when: >-
+        'deny (incoming)' not in firewall_status.stdout
+        or ('Status: active' in firewall_status.stdout) != (firewall_enabled | bool)

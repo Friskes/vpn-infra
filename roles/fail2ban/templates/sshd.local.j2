@@ -1,0 +1,10 @@
+# Управляется Ansible (роль fail2ban). Правьте переменные роли, а не этот файл.
+# Drop-in переопределяет только нужные параметры; остальное берётся из jail.conf.
+
+[DEFAULT]
+banaction = {{ fail2ban_banaction }}
+
+[sshd]
+enabled = true
+maxretry = {{ fail2ban_maxretry }}
+bantime = {{ fail2ban_bantime }}

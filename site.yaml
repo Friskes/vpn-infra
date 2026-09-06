@@ -1,0 +1,71 @@
+---
+- name: Развёртывание VPS под VPN (WireGuard + DNS-туннель + RustDesk)
+  hosts: vpn
+  become: true
+  gather_facts: true
+
+  # Гасит интерактивные диалоги apt/needrestart («розовое окно») при обновлении.
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+  # Прерванный прогон иначе потеряет отложенные перезапуски: конфигурация записана,
+  # а применить её уже никто не попробует — сервис останется на старых настройках.
+  force_handlers: true
+
+  roles:
+    # Своп идёт первым: он страхует от OOM на apt-апгрейде в роли common.
+    - role: swap
+      tags: [swap]
+    - role: common
+      tags: [common]
+    # Идёт до файрвола: если что-то пойдёт не так с доступом, ufw ещё не включён.
+    - role: ssh
+      tags: [ssh]
+    - role: docker
+      tags: [docker]
+    - role: firewall
+      tags: [firewall]
+    - role: fail2ban
+      tags: [fail2ban]
+    - role: wireguard
+      tags: [wireguard]
+    - role: slipstream
+      tags: [slipstream]
+    # Идёт после slipstream: обе роли заканчиваются на одном SOCKS, и порт 53
+    # на IPv4 занимает именно slipstream — dnstt достаётся IPv6.
+    - role: dnstt
+      tags: [dnstt]
+    - role: xui
+      tags: [xui]
+    - role: rustdesk
+      tags: [rustdesk]
+    - role: summary
+      tags: [summary]
+    # never: в обычный прогон роль не попадает, снимается только явным make backup.
+    - role: backup
+      tags: [backup, never]
+
+- name: Развёртывание входных нод (Reality-вход, цепочка на выходную ноду)
+  hosts: entry
+  become: true
+  gather_facts: true
+
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+  force_handlers: true
+
+  # Только базовая подготовка и вход-прокси: полного VPN-стека на входной ноде нет.
+  roles:
+    - role: swap
+      tags: [swap]
+    - role: common
+      tags: [common]
+    - role: ssh
+      tags: [ssh]
+    - role: firewall
+      tags: [firewall]
+    - role: fail2ban
+      tags: [fail2ban]
+    - role: xray-entry
+      tags: [xray-entry]

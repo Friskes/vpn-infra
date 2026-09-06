@@ -1,0 +1,7 @@
+---
+fail2ban_maxretry: 3
+fail2ban_bantime: "60m"
+
+# На хосте с Docker fail2ban может уйти в nftables, а Docker правит iptables —
+# тогда баны не применяются. Жёстко задаём iptables-backend, совпадающий с Docker.
+fail2ban_banaction: "iptables-multiport"

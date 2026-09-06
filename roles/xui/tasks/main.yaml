@@ -1,0 +1,193 @@
+---
+# 3x-ui — панель поверх Xray-core. Держит вход VLESS+Reality: клиент выглядит
+# как обычный браузер, открывший чужой сайт, поэтому DPI не за что зацепиться.
+# Сам сервер при активной проверке отвечает рукопожатием того же чужого сайта.
+
+- name: Проверить пароль админки 3x-ui
+  ansible.builtin.assert:
+    that:
+      - xui_admin_password | length >= 20
+      - "'Замените' not in xui_admin_password"
+    fail_msg: >-
+      Заполните vault_xui_admin_password в group_vars/all/vault.yaml —
+      не меньше 20 символов и не заглушка из шаблона.
+    quiet: true
+  when: xui_enabled | bool
+
+- name: Развернуть панель Xray
+  when: xui_enabled | bool
+  block:
+    - name: Создать каталоги 3x-ui
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - "{{ xui_config_dir }}"
+        - "{{ xui_config_dir }}/db"
+        - "{{ xui_config_dir }}/cert"
+
+    # Зачем проверка — объяснено в roles/wireguard/tasks/main.yaml.
+    - name: Проверить, доступен ли Docker
+      ansible.builtin.stat:
+        path: /var/run/docker.sock
+      register: xui_docker_socket
+
+    # Путь админки создаётся один раз и потом только читается: смена пути
+    # каждый прогон ломала бы закладку и ссылку, по которой заходят.
+    - name: Прочитать сохранённый путь админки
+      ansible.builtin.slurp:
+        src: "{{ xui_config_dir }}/.base-path"
+      register: xui_saved_path
+      failed_when: false
+
+    # Путь берём из случайных байтов сервера, а не из имени хоста: хэш от имени
+    # вычисляется кем угодно, и «случайным» такой путь только называется.
+    # Считается один раз, дальше читается из .base-path.
+    - name: Придумать путь админки
+      ansible.builtin.command: openssl rand -hex 6
+      register: xui_path_random
+      changed_when: false
+      check_mode: false
+      when: xui_saved_path.content is not defined
+
+    - name: Выбрать путь админки
+      ansible.builtin.set_fact:
+        xui_random_path: "/{{ xui_path_random.stdout | default('') | trim }}/"
+
+    - name: Зафиксировать путь админки
+      ansible.builtin.set_fact:
+        xui_effective_path: >-
+          {{ (xui_saved_path.content | b64decode | trim)
+             if xui_saved_path.content is defined
+             else (xui_base_path if xui_base_path | length > 0 else xui_random_path) }}
+
+    - name: Сохранить путь админки
+      ansible.builtin.copy:
+        content: "{{ xui_effective_path }}"
+        dest: "{{ xui_config_dir }}/.base-path"
+        owner: root
+        group: root
+        mode: "0600"
+
+    # Почему до пересоздания — объяснено в roles/wireguard/tasks/main.yaml.
+    - name: Скачать образ 3x-ui заранее
+      community.docker.docker_image_pull:
+        name: "{{ xui_image }}"
+        pull: not_present
+      when: xui_docker_socket.stat.exists
+
+    - name: Запустить контейнер 3x-ui
+      community.docker.docker_container:
+        name: "{{ xui_container_name }}"
+        image: "{{ xui_image }}"
+        state: started
+        restart_policy: unless-stopped
+        memory: "{{ xui_memory_limit }}"
+        comparisons:
+          volumes: ignore
+          capabilities: strict
+        # Единственный контейнер, который разбирает недоверенный TLS прямо из
+        # интернета, — и до этого он работал с полным набором возможностей докера.
+        # Из них нужна ровно одна: занять 443 внутри контейнера.
+        cap_drop:
+          - ALL
+        capabilities:
+          - CAP_NET_BIND_SERVICE
+        security_opts:
+          - "no-new-privileges:true"
+        env:
+          XRAY_VMESS_AEAD_FORCED: "false"
+          XUI_ENABLE_FAIL2BAN: "{{ xui_enable_fail2ban | string | lower }}"
+        volumes:
+          - "{{ xui_config_dir }}/db:/etc/x-ui"
+          - "{{ xui_config_dir }}/cert:/root/cert"
+        ports:
+          # Вход для клиентов и админка на loopback — больше наружу ничего.
+          - "{{ xui_public_port }}:{{ xui_public_port }}/tcp"
+          - "{{ xui_admin_publish }}"
+        default_host_ip: ""
+      when: xui_docker_socket.stat.exists
+
+    - name: Убедиться, что панель поднялась
+      community.docker.docker_container_info:
+        name: "{{ xui_container_name }}"
+      register: xui_state
+      until: xui_state.container.State.Running | default(false)
+      retries: 6
+      delay: 5
+      when: not ansible_check_mode
+
+    # Отпечаток учётных данных: пока он совпадает, панель не трогаем. Иначе
+    # каждый прогон переписывал бы настройки и показывал изменение на ровном месте.
+    - name: Прочитать отпечаток настроек панели
+      ansible.builtin.slurp:
+        src: "{{ xui_config_dir }}/.settings-fingerprint"
+      register: xui_saved_fingerprint
+      failed_when: false
+      no_log: true
+
+    - name: Посчитать отпечаток нужных настроек
+      ansible.builtin.set_fact:
+        xui_fingerprint: "{{ (xui_admin_user ~ '|' ~ xui_admin_password ~ '|' ~ xui_effective_path) | hash('sha256') }}"
+      no_log: true
+
+    # Пароль подаётся на stdin. Ни argv, ни environment для этого не годятся:
+    # Ansible клеит переменные окружения префиксом к команде (VAR=значение cmd),
+    # и с включённым pipelining они точно так же оседают в /proc/<pid>/cmdline,
+    # который читает любая локальная учётка. А учётки демонов, разбирающих трафик
+    # из интернета, — ровно те, откуда и ждут гостя.
+    - name: Задать логин, пароль и путь админки
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - -i
+          - "{{ xui_container_name }}"
+          - sh
+          - -c
+          - >-
+            read -r pass;
+            /app/x-ui setting -username "$1" -password "$pass"
+            -webBasePath "$2" -port "$3"
+          - sh
+          - "{{ xui_admin_user }}"
+          - "{{ xui_effective_path }}"
+          - "{{ xui_admin_port | string }}"
+        stdin: "{{ xui_admin_password }}"
+        stdin_add_newline: true
+      no_log: true
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - (xui_saved_fingerprint.content | default('') | b64decode | trim) != xui_fingerprint
+      notify: Restart 3x-ui
+
+    - name: Сохранить отпечаток настроек
+      ansible.builtin.copy:
+        content: "{{ xui_fingerprint }}"
+        dest: "{{ xui_config_dir }}/.settings-fingerprint"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Подсказать, как войти в панель
+      ansible.builtin.debug:
+        msg: >-
+          Панель Xray поднята. Снаружи её нет: пробросьте порт —
+          ssh -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
+          и откройте http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path }}
+          Дальше заведите вход VLESS + Reality на порт {{ xui_public_port }}.
+
+- name: Остановить панель, если она выключена
+  community.docker.docker_container:
+    name: "{{ xui_container_name }}"
+    state: absent
+  when:
+    - not xui_enabled | bool
+    - not ansible_check_mode
+  failed_when: false

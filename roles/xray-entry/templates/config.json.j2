@@ -1,0 +1,53 @@
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": {{ xray_entry_port }},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {"id": "{{ xray_entry_client_uuid }}", "flow": "xtls-rprx-vision"}
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "dest": "{{ xray_entry_sni }}:443",
+          "serverNames": ["{{ xray_entry_sni }}"],
+          "privateKey": "{{ xray_entry_reality_priv }}",
+          "shortIds": ["{{ xray_entry_reality_sid }}"]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "to-exit",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "{{ xray_entry_upstream_address }}",
+            "port": {{ xray_entry_upstream_port }},
+            "users": [
+              {"id": "{{ xray_entry_upstream_uuid }}", "flow": "xtls-rprx-vision", "encryption": "none"}
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "{{ xray_entry_upstream_sni }}",
+          "publicKey": "{{ xray_entry_upstream_public_key }}",
+          "shortId": "{{ xray_entry_upstream_short_id }}",
+          "fingerprint": "{{ xray_entry_upstream_fingerprint }}"
+        }
+      }
+    }
+  ]
+}

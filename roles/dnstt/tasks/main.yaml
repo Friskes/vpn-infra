@@ -1,0 +1,221 @@
+---
+# dnstt — второй DNS-туннель. Slipstream быстрее там, где резолвер оператора
+# честно доносит UDP-ответы; dnstt берёт другим: он умеет TCP, DoT и DoH, а их
+# оператор не шейпит. Зоны и адреса у туннелей разные, друг другу они не мешают.
+
+- name: Пропустить dnstt, пока не задан домен
+  ansible.builtin.debug:
+    msg: >-
+      Для {{ inventory_hostname }} не задан dnstt_domain — второй туннель не
+      разворачивается. Нужен свой поддомен, делегированный на IPv6 сервера.
+  when: not dnstt_enabled | bool
+
+# Туннель заканчивается на 3proxy, а его поднимает роль slipstream — и она же его
+# останавливает, если выключена. Без этой проверки dnstt развернулся бы и стартовал,
+# а каждое соединение упиралось бы в отказ, причём в его собственных логах чисто.
+- name: Проверить, что есть на чём заканчивать туннель
+  ansible.builtin.assert:
+    that: slipstream_enabled | bool
+    fail_msg: >-
+      dnstt использует SOCKS от роли slipstream ({{ dnstt_upstream }}), а она
+      выключена. Включите slipstream_enabled или очистите dnstt_domain.
+    quiet: true
+  when: dnstt_enabled | bool
+
+- name: Развернуть второй DNS-туннель
+  when: dnstt_enabled | bool
+  block:
+    # Порт 53 на IPv4 держит Slipstream, поэтому без IPv6 второму туннелю
+    # просто негде слушать.
+    - name: Проверить, что у сервера есть внешний IPv6
+      ansible.builtin.assert:
+        that: dnstt_listen_host | length > 0
+        fail_msg: >-
+          У {{ inventory_hostname }} не найден внешний IPv6, а порт 53 на IPv4
+          занят Slipstream. Задайте dnstt_listen_host вручную или отключите
+          dnstt, очистив dnstt_domain.
+        quiet: true
+
+    - name: Завести системную учётку для dnstt
+      ansible.builtin.user:
+        name: "{{ dnstt_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    # git нужен модулю ansible.builtin.git на самом сервере, и на чистом образе
+    # его нет: без этой строки первый прогон на новом сервере падал с «Failed to
+    # find required executable git».
+    - name: Поставить Go и git для сборки
+      ansible.builtin.apt:
+        name:
+          - golang-go
+          - git
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # В сухом прогоне apt ничего не ставит, и go на свежем сервере ещё нет:
+    # без этой проверки make check обрывался бы там, где им и страхуются.
+    - name: Проверить, установлен ли Go
+      ansible.builtin.stat:
+        path: /usr/bin/go
+      register: dnstt_go_binary
+
+    - name: Узнать версию Go
+      ansible.builtin.command: go version
+      register: dnstt_go
+      changed_when: false
+      check_mode: false
+      when: dnstt_go_binary.stat.exists
+
+    # В Ubuntu 22.04 пакетный Go — 1.18, а исходники требуют 1.21: сборка упала бы
+    # с невнятной ошибкой про версию модуля. Лучше сказать это прямо.
+    - name: Проверить, что Go достаточно свежий
+      ansible.builtin.assert:
+        that: dnstt_go.stdout | regex_search('go1\.(\d+)', '\\1') | first | int >= 21
+        fail_msg: >-
+          Для сборки dnstt нужен Go 1.21+, а в системе {{ dnstt_go.stdout }}.
+          На Ubuntu 22.04 пакетный golang-go слишком старый — поставьте свежий Go
+          вручную или обновите систему.
+        quiet: true
+      when: dnstt_go_binary.stat.exists
+
+    - name: Создать каталоги dnstt
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ dnstt_src_dir }}"
+          group: root
+          mode: "0755"
+        # Ключи читает только демон: каталог остаётся за root, но группа —
+        # учётка сервиса, иначе она не сможет даже войти в каталог.
+        - path: "{{ dnstt_conf_dir }}"
+          group: "{{ dnstt_user }}"
+          mode: "0750"
+
+    # Готовых сборок автор не публикует, только исходники. Go-сборка лёгкая:
+    # чистых зависимостей на пару минут, в отличие от Slipstream с его picoquic.
+    # Без depth: репозиторий автора отдаётся по «dumb http», а он не умеет
+    # поверхностные клоны. Репозиторий маленький, полная копия ничего не стоит.
+    - name: Забрать исходники нужной версии
+      ansible.builtin.git:
+        repo: "{{ dnstt_repo }}"
+        dest: "{{ dnstt_src_dir }}"
+        version: "{{ dnstt_version }}"
+
+    - name: Узнать, из какой версии собран текущий бинарник
+      ansible.builtin.slurp:
+        src: "{{ dnstt_src_dir }}/.built-version"
+      register: dnstt_built
+      failed_when: false
+
+    # not ansible_check_mode: в сухом прогоне исходников на диске нет, и задача
+    # упала бы на отсутствующем каталоге, а не на реальной проблеме.
+    - name: Собрать dnstt-server
+      ansible.builtin.command:
+        cmd: go build -o {{ dnstt_bin }} .
+        chdir: "{{ dnstt_src_dir }}/dnstt-server"
+      # Задача выполняется только при смене версии (условие ниже), поэтому её
+      # запуск и есть изменение — отсюда безусловный changed.
+      changed_when: true
+      environment:
+        GOFLAGS: -mod=mod
+        # Кэш под root, а не в /tmp: путь предсказуем, каталог общедоступен, и
+        # непривилегированная учётка могла бы подложить туда объекты — Go не
+        # перепроверяет хэши при чтении, а собранный бинарник тут же становится
+        # сетевым демоном.
+        GOCACHE: "{{ dnstt_src_dir }}/.gocache"
+      when:
+        - (dnstt_built.content | default('') | b64decode | trim) != dnstt_version
+        - not ansible_check_mode
+      notify: Restart dnstt
+
+    - name: Запомнить собранную версию
+      ansible.builtin.copy:
+        content: "{{ dnstt_version }}\n"
+        dest: "{{ dnstt_src_dir }}/.built-version"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Ключи создаются один раз: перегенерация обнулит все выданные профили,
+    # потому что клиент проверяет сервер именно по этому публичному ключу.
+    - name: Проверить, есть ли ключи
+      ansible.builtin.stat:
+        path: "{{ dnstt_privkey }}"
+      register: dnstt_key
+
+    - name: Создать пару ключей
+      ansible.builtin.command:
+        cmd: >-
+          {{ dnstt_bin }} -gen-key
+          -privkey-file {{ dnstt_privkey }}
+          -pubkey-file {{ dnstt_pubkey }}
+      when:
+        - not dnstt_key.stat.exists
+        - not ansible_check_mode
+      changed_when: true
+
+    - name: Отдать ключи демону
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: "{{ dnstt_user }}"
+        group: "{{ dnstt_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ dnstt_privkey }}"
+          mode: "0400"
+        - path: "{{ dnstt_pubkey }}"
+          mode: "0444"
+      when: not ansible_check_mode
+
+    # Домен нужен команде dnstt-profile: она печатает его вместе с ключом.
+    - name: Записать домен туннеля
+      ansible.builtin.copy:
+        content: "{{ dnstt_domain }}\n"
+        dest: "{{ dnstt_conf_dir }}/domain"
+        owner: root
+        group: root
+        mode: "0444"
+
+    - name: Установить команду показа профиля
+      ansible.builtin.copy:
+        src: dnstt-profile
+        dest: /usr/local/bin/dnstt-profile
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Настроить сервис dnstt
+      ansible.builtin.template:
+        src: dnstt.service.j2
+        dest: /etc/systemd/system/dnstt.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart dnstt
+
+    - name: Включить dnstt
+      ansible.builtin.systemd_service:
+        name: dnstt
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: not ansible_check_mode
+
+# Иначе очистка домена просто перестаёт разворачивать роль, а служба продолжает
+# работать со старым доменом и ключом — и при этом выпадает из бэкапа.
+- name: Остановить туннель, если он выключен
+  ansible.builtin.systemd_service:
+    name: dnstt
+    state: stopped
+    enabled: false
+  when:
+    - not dnstt_enabled | bool
+    - not ansible_check_mode
+  failed_when: false

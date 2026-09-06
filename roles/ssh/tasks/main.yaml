@@ -1,0 +1,72 @@
+---
+# Доступ на сервер. Порядок задач важен: сначала кладём ключ и убеждаемся,
+# что он работает, и только потом закрываем вход по паролю.
+
+- name: Убрать лишние учётные записи
+  ansible.builtin.user:
+    name: "{{ item }}"
+    state: absent
+    remove: true
+    force: true
+  loop: "{{ ssh_absent_users }}"
+
+# exclusive: сервер однопользовательский, в authorized_keys должны лежать РОВНО
+# наши ключи. Так дописанный руками или подсунутый чужой ключ вычищается сам.
+# Ключи передаём одной строкой, а не циклом: с exclusive цикл оставил бы только
+# последний ключ, затерев остальные.
+- name: Разрешить вход только нашим ключам
+  ansible.posix.authorized_key:
+    user: root
+    key: "{{ ssh_authorized_keys | join('\n') }}"
+    state: present
+    exclusive: true
+  when: ssh_authorized_keys | length > 0
+
+# Ключ должен реально лежать на сервере до того, как отключим пароли, иначе
+# следующий прогон отрежет доступ, а войти будет уже нечем.
+- name: Проверить, что ключ на месте
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: ssh_authorized_file
+
+- name: Не отключать пароль, пока нет ни одного ключа
+  ansible.builtin.assert:
+    that:
+      - ssh_authorized_file.stat.exists
+      - ssh_authorized_file.stat.size > 0
+    fail_msg: >-
+      На сервере нет ни одного SSH-ключа, а ssh_disable_password: true отрежет
+      вход по паролю. Сначала задайте ssh_authorized_keys и разверните роль,
+      затем убедитесь, что вход по ключу работает.
+    quiet: true
+  # В check-режиме authorized_key ключ не пишет, поэтому на свежем сервере stat
+  # его не найдёт и assert упал бы вхолостую — реальный прогон проверку выполнит.
+  when:
+    - ssh_disable_password
+    - not ansible_check_mode
+
+# Имя начинается с 00 намеренно: sshd берёт ПЕРВОЕ встреченное значение, а
+# облачный образ кладёт 50-cloud-init.conf с PasswordAuthentication yes.
+# С именем 99-* наши настройки проигрывали бы ему молча.
+- name: Настроить sshd
+  ansible.builtin.template:
+    src: hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: sshd -t -f %s
+  notify: Reload sshd
+
+- name: Убрать прежний файл настроек, который читался слишком поздно
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/99-hardening.conf
+    state: absent
+  notify: Reload sshd
+
+# Иначе конфиг применялся бы только в конце прогона: прерви его (Ctrl+C, обрыв связи) —
+# и sshd навсегда останется на старых настройках, потому что на следующем прогоне файл
+# уже совпадёт с шаблоном и notify больше не сработает. Прямой сценарий: на диске вход
+# по паролю закрыт, а sshd продолжает его принимать.
+- name: Применить настройки sshd немедленно
+  ansible.builtin.meta: flush_handlers

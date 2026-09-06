@@ -1,0 +1,8 @@
+---
+# not ansible_check_mode: в сухом прогоне на свежем сервере юнита ещё нет.
+- name: Restart dnstt
+  ansible.builtin.systemd_service:
+    name: dnstt
+    state: restarted
+    daemon_reload: true
+  when: not ansible_check_mode

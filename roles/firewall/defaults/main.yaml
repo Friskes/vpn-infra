@@ -1,0 +1,21 @@
+---
+firewall_enabled: true
+
+# Порт, по которому к серверу ходит сам ansible: иначе включение ufw отрезало бы доступ.
+firewall_ssh_port: "{{ ansible_port | default(22) }}"
+
+# Здесь только порты сервисов в host-сети — их трафик идёт через INPUT, и ufw ими правда
+# управляет. Порты wg-easy (51820/51821) публикует Docker через DNAT в FORWARD, правила ufw
+# их не фильтруют вообще, поэтому их тут нет: строка в списке создавала бы ложное ощущение
+# контроля. Закрыть админку можно только публикацией на 127.0.0.1 или правилом в DOCKER-USER.
+#
+# Списки собираются по выключателям сервисов: выключенный сервис не должен оставлять
+# открытый порт — по нему сканер и опознаёт машину. Уже добавленные правила ufw роль
+# при этом не удаляет (так задумано), их убирают руками.
+firewall_allowed_tcp_ports: >-
+  {{ ([rustdesk_nat_test_port ~ ':' ~ rustdesk_relay_port] if rustdesk_enabled | bool else [])
+     + ([xui_public_port] if xui_enabled | default(false) | bool else []) }}
+firewall_allowed_udp_ports: >-
+  {{ ([rustdesk_id_port] if rustdesk_enabled | bool else [])
+     + ([slipstream_listen_port] if slipstream_enabled | bool else [])
+     + ([dnstt_listen_port] if dnstt_enabled | default(false) | bool else []) }}

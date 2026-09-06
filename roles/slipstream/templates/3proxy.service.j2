@@ -1,0 +1,41 @@
+[Unit]
+Description=SOCKS5 proxy behind the DNS tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart={{ proxy_bin }} {{ proxy_conf_dir }}/3proxy.cfg
+# Перечитывает конфиг и список пользователей, не разрывая живые соединения.
+ExecReload=/bin/kill -USR1 $MAINPID
+Restart=always
+RestartSec=5
+
+# Работает под отдельной непривилегированной учёткой: файл учёток (0600) принадлежит
+# ей, поэтому USR1-перечитывание живёт и без root. Слушает localhost и порт выше 1024 —
+# ничего привилегированного не нужно, все возможности ядра отобраны.
+User={{ proxy_user }}
+Group={{ proxy_user }}
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+# Соседние учётки не должны видеть чужие /proc: там оседают аргументы команд,
+# которыми Ansible настраивает сервисы, вместе с паролями админок.
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadOnlyPaths={{ proxy_conf_dir }}
+# Единственное место, куда сервис пишет. При ProtectSystem=strict вся система
+# только для чтения, и без этой строки 3proxy не откроет лог — молча, без ошибки.
+ReadWritePaths={{ proxy_log_dir }}
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

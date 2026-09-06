@@ -1,0 +1,36 @@
+---
+- name: Установить fail2ban
+  ansible.builtin.apt:
+    name: fail2ban
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# В сухом прогоне на свежем сервере apt ничего не ставит, юнита fail2ban ещё нет —
+# и обращение к нему уронило бы весь make check перед первым развёртыванием.
+- name: Проверить, установлен ли fail2ban
+  ansible.builtin.stat:
+    path: /usr/bin/fail2ban-server
+  register: fail2ban_binary
+
+- name: Настроить джейл sshd (drop-in в jail.d)
+  ansible.builtin.template:
+    src: sshd.local.j2
+    dest: /etc/fail2ban/jail.d/sshd.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+
+- name: Включить автозапуск и запустить fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    enabled: true
+    state: started
+  when: fail2ban_binary.stat.exists
+
+# Без этого handler ждал бы конца play: упади любая следующая роль — конфиг остался бы
+# записанным, но не применённым, а на следующем прогоне шаблон уже совпадает и notify
+# не сработает никогда.
+- name: Применить настройки fail2ban немедленно
+  ansible.builtin.meta: flush_handlers

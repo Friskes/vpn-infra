@@ -1,0 +1,8 @@
+---
+# not ansible_check_mode: в сухом прогоне на свежем сервере контейнера ещё нет.
+- name: Restart 3x-ui
+  community.docker.docker_container:
+    name: "{{ xui_container_name }}"
+    state: started
+    restart: true
+  when: not ansible_check_mode

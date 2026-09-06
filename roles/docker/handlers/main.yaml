@@ -1,0 +1,8 @@
+---
+# not ansible_check_mode: в сухом прогоне на свежем сервере юнита ещё нет.
+- name: Reapply docker guard
+  ansible.builtin.systemd_service:
+    name: docker-user-guard
+    state: restarted
+    daemon_reload: true
+  when: not ansible_check_mode

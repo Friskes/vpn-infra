@@ -1,0 +1,207 @@
+---
+# Снимок состояния, без которого аварийный переезд обходится дорого: ключи и списки
+# клиентов всех четырёх каналов. Без них выданные конфиги и ссылки придётся выпускать
+# заново, обходя каждое устройство. Роль подключена с тегом never: сама по себе при
+# make deploy не выполняется, только по make backup.
+
+- name: Перечислить, что снимаем
+  ansible.builtin.set_fact:
+    backup_targets: >-
+      {{ [backup_wireguard_name, backup_slipnet_name, backup_reset_seed_name,
+          backup_dnstt_name, backup_xui_name]
+         | map('regex_replace', '^', artifacts_dir ~ '/' ~ inventory_hostname ~ '/')
+         | list }}
+
+# Копия делается до скачивания и для всех файлов сразу, а не для одного архива:
+# роль dnstt пересоздаёт ключ, если он исчез с сервера, и один такой прогон плюс
+# один бэкап уничтожили бы единственную копию — все выданные профили после этого
+# не восстановить. Копируем уже зашифрованный файл, поэтому .prev тоже зашифрован.
+- name: Сохранить прошлые снимки
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ item }}.prev"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  loop: "{{ backup_targets }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  when: backup_keep_previous | bool
+  failed_when: false
+
+- name: Проверить, есть ли состояние wg-easy
+  ansible.builtin.stat:
+    # Именно файл состояния, а не каталог: каталог роль wireguard создаёт всегда,
+    # и на свежем сервере пустой архив затёр бы единственную копию ключей старого.
+    path: "{{ wireguard_config_dir }}/wg0.json"
+  register: backup_wireguard_state
+
+- name: Снять состояние wg-easy
+  when: backup_wireguard_state.stat.exists
+  block:
+    # Архив собирается сразу с правами 0600 — модулем, а не голым tar: у tar права
+    # достаются от umask (0644), и всё время до удаления архив был бы читаем всем.
+    - name: Собрать архив состояния wg-easy
+      community.general.archive:
+        path: "{{ wireguard_config_dir }}/"
+        dest: "{{ backup_wireguard_archive }}"
+        format: gz
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: Узнать размер собранного архива
+      ansible.builtin.stat:
+        path: "{{ backup_wireguard_archive }}"
+      register: backup_archive_stat
+
+    # Пустой архив (сервер переустановили, состояние не восстановили) не должен
+    # молча заменить собой единственную копию ключей. 500 байт — заведомо меньше
+    # рабочего снимка даже с одним клиентом.
+    #
+    # Результат кладём в факт, а не в assert: падение здесь оборвало бы весь бэкап,
+    # и не снялись бы остальные четыре файла — ровно тогда, когда они нужнее всего.
+    # В check-режиме архива нет вовсе, поэтому size берём с запасным значением.
+    - name: Оценить, годится ли архив к отправке
+      ansible.builtin.set_fact:
+        backup_archive_ok: "{{ (backup_archive_stat.stat.size | default(0)) > 500 }}"
+
+    - name: Предупредить о подозрительно маленьком архиве
+      ansible.builtin.debug:
+        msg: >-
+          Архив wg-easy получился маленьким
+          ({{ backup_archive_stat.stat.size | default(0) }} Б) — похоже, на сервере нет
+          состояния. Прежний снимок в artifacts/ оставлен нетронутым, остальные файлы
+          сняты как обычно.
+      when:
+        - not backup_archive_ok | bool
+        - not ansible_check_mode
+
+    - name: Скачать архив wg-easy на локальный ПК
+      ansible.builtin.fetch:
+        src: "{{ backup_wireguard_archive }}"
+        dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_wireguard_name }}"
+        flat: true
+      when: backup_archive_ok | bool
+  always:
+    # always: упавшая закачка (нет места, оборвался канал) иначе оставила бы архив
+    # с ключами на сервере до следующего удачного бэкапа.
+    - name: Убрать архив с сервера
+      ansible.builtin.file:
+        path: "{{ backup_wireguard_archive }}"
+        state: absent
+
+- name: Скачать учётки DNS-туннеля на локальный ПК
+  ansible.builtin.fetch:
+    src: "{{ slipnet_users_file }}"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_slipnet_name }}"
+    flat: true
+    fail_on_missing: false
+  register: backup_slipnet_fetch
+  when: slipstream_enabled | bool
+
+# Seed переживает перезапуск сервиса: без него после переезда клиенты висят
+# до истечения таймаута вместо мгновенного переподключения.
+- name: Скачать reset-seed slipstream
+  ansible.builtin.fetch:
+    src: "{{ slipstream_reset_seed }}"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_reset_seed_name }}"
+    flat: true
+    fail_on_missing: false
+  register: backup_seed_fetch
+  when: slipstream_enabled | bool
+
+# Ключ dnstt: при перегенерации перестают работать все выданные профили, потому что
+# клиент проверяет сервер именно по нему.
+- name: Скачать ключ dnstt
+  ansible.builtin.fetch:
+    src: "{{ dnstt_privkey }}"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_dnstt_name }}"
+    flat: true
+    fail_on_missing: false
+  register: backup_dnstt_fetch
+  when: dnstt_domain | default('') | length > 0
+
+# База панели Xray: в ней клиенты Reality с их UUID и настройки входов.
+- name: Скачать базу панели Xray
+  ansible.builtin.fetch:
+    src: "{{ xui_config_dir }}/db/x-ui.db"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_xui_name }}"
+    flat: true
+    fail_on_missing: false
+  register: backup_xui_fetch
+  when: xui_enabled | default(false) | bool
+
+- name: Собрать список того, что реально скачалось
+  ansible.builtin.set_fact:
+    backup_local_files: >-
+      {{ ([artifacts_dir ~ '/' ~ inventory_hostname ~ '/' ~ backup_wireguard_name]
+            if backup_wireguard_state.stat.exists and backup_archive_ok | default(false) | bool
+            else [])
+         + [backup_slipnet_fetch.dest | default(''),
+            backup_seed_fetch.dest | default(''),
+            backup_dnstt_fetch.dest | default(''),
+            backup_xui_fetch.dest | default('')] | select | list }}
+
+# Прошлые снимки шифруем заодно: копия делается до скачивания, и если в тот момент
+# файл ещё лежал открытым (первый прогон после включения шифрования), .prev так и
+# остался бы незашифрованным архивом с ключами.
+- name: Добавить прошлые снимки к шифрованию
+  ansible.builtin.stat:
+    path: "{{ item }}.prev"
+  delegate_to: localhost
+  become: false
+  loop: "{{ backup_targets }}"
+  loop_control:
+    label: "{{ item | basename }}.prev"
+  register: backup_prev_stat
+
+- name: Сказать, кого из прошлых снимков шифровать
+  ansible.builtin.set_fact:
+    backup_local_files: >-
+      {{ backup_local_files
+         + (backup_prev_stat.results | selectattr('stat.exists') | map(attribute='item')
+            | map('regex_replace', '$', '.prev') | list) }}
+
+- name: Ограничить права на скачанное
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  loop: "{{ backup_local_files }}"
+
+# Шифруем тем же ключом, что и остальные секреты проекта: файлы лежат в artifacts/
+# рядом с ключом от vault, и незашифрованными они сводят на нет весь vault.
+- name: Зашифровать скачанное локальным vault
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/.venv/bin/ansible-vault"
+      - encrypt
+      # Ключ подхватывается из ansible.cfg. Свой --vault-password-file добавлять
+      # нельзя: получаются два ключа с именем default, и ansible-vault отказывается
+      # выбирать между ними, требуя --encrypt-vault-id.
+      - --encrypt-vault-id
+      - default
+      - "{{ item }}"
+  delegate_to: localhost
+  become: false
+  loop: "{{ backup_local_files }}"
+  when: backup_encrypt_local | bool
+  register: backup_encrypt
+  changed_when: backup_encrypt.rc == 0
+  # Уже зашифрованный файл модуль ansible-vault считает ошибкой — это не повод
+  # ронять бэкап, снимок к этому моменту уже снят.
+  failed_when:
+    - backup_encrypt.rc != 0
+    - "'is already encrypted' not in (backup_encrypt.stderr | default(''))"
+
+- name: Показать, что снято
+  ansible.builtin.debug:
+    msg: >-
+      Бэкап в {{ artifacts_dir }}/{{ inventory_hostname }}/{{ ', файлы зашифрованы vault'
+      if backup_encrypt_local | bool else '' }}.
+      Восстановление wg-easy на новом сервере: сначала ansible-vault decrypt нужного файла,
+      затем make deploy HOST=<новый>
+      ARGS="-e wireguard_restore_src={{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_wireguard_name }}".
+      Ссылки slipnet:// и профили dnstt придётся выпустить заново: в них зашит домен старого сервера.

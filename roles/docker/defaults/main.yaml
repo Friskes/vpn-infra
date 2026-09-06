@@ -1,0 +1,28 @@
+---
+# Docker нужен только тем сервисам, что живут в контейнерах. Выключены все трое —
+# движок на сервер не ставится вовсе: меньше пакетов, меньше поверхности атаки.
+docker_enabled: >-
+  {{ (wireguard_enabled | default(true) | bool)
+     or (xui_enabled | default(false) | bool)
+     or (rustdesk_enabled | default(false) | bool) }}
+
+docker_packages:
+  - docker.io
+  # python3-requests нужен НА СЕРВЕРЕ: модули community.docker выполняются на целевом
+  # хосте и общаются с Docker API через requests (полный Docker SDK им уже не требуется).
+  - python3-requests
+
+# Отбрасывать в DOCKER-USER всё, что контейнеры опубликовали, кроме списка ниже.
+docker_guard_enabled: true
+
+# Интерфейс, смотрящий в интернет. Правила стража вешаются только на входящее с
+# него: через DOCKER-USER идёт и транзит клиентов WireGuard, и без этой привязки
+# запрет рубит им весь интернет.
+docker_guard_wan_interface: "{{ ansible_default_ipv4.interface | default('eth0') }}"
+
+# Порты, которые контейнерам действительно можно публиковать наружу, каждый со
+# своим протоколом. Всё, что докер выставит помимо них, страж отбросит — ufw это
+# сделать не в состоянии, потому что публикации докера идут мимо INPUT.
+docker_guard_public_ports: >-
+  {{ ([wireguard_vpn_port ~ '/udp'] if wireguard_enabled | default(true) | bool else [])
+     + ([xui_public_port ~ '/tcp'] if xui_enabled | default(false) | bool else []) }}

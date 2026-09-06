@@ -1,0 +1,341 @@
+---
+# DNS-туннель: прячет трафик внутри обычных DNS-запросов. Нужен там, где оператор
+# режет всё, кроме белого списка, — телефон говорит только с резолвером оператора,
+# а тот сам идёт за ответом к этому серверу.
+
+- name: Проверить, что домен туннеля задан
+  ansible.builtin.assert:
+    that:
+      - slipstream_domain | length > 0
+      - slipstream_default_resolver | length > 0
+      # Домен из шаблона host_vars: каталог скопировали, а поправить забыли.
+      - "'example.ru' not in slipstream_domain"
+    fail_msg: >-
+      Для {{ inventory_hostname }} не задан домен туннеля или резолвер.
+      Заполните host_vars/{{ inventory_hostname }}/vars.yaml: у каждого сервера
+      должен быть свой поддомен, делегированный на его адрес.
+    quiet: true
+  when: slipstream_enabled | bool
+
+- name: Установить и настроить DNS-туннель
+  when: slipstream_enabled | bool
+  block:
+    # Демоны работают не под root: RCE в коде, разбирающем трафик из интернета,
+    # тогда не даёт чтения всех паролей и власти над системой. proxy обычно уже есть
+    # в Debian — заводим оба на случай минимального образа, для существующего это no-op.
+    - name: Завести системные учётки для демонов туннеля
+      ansible.builtin.user:
+        name: "{{ item }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+      loop:
+        - "{{ slipstream_user }}"
+        - "{{ proxy_user }}"
+
+    - name: Создать служебные каталоги туннеля
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ slipstream_dist_dir }}"
+          mode: "0755"
+        # Пароли пользователей и настройки команды выдачи доступа — отдельно от каталога
+        # туннеля и под root: демону доступ на запись к учёткам не нужен.
+        - path: "{{ slipnet_state_dir }}"
+          mode: "0700"
+        - path: "{{ slipnet_settings_dir }}"
+          mode: "0700"
+
+    # Владельца здесь НЕ задаём: новый каталог и так создаётся от root, а существующему
+    # владельца выставляют задачи в конце роли. Ставить тут root означало бы каждый прогон
+    # отбирать каталог у сервисной учётки и возвращать обратно: роль никогда не сходилась
+    # бы, сухой прогон всегда показывал изменения, а упавший в этот момент демон не смог
+    # бы перечитать свои файлы.
+    - name: Создать каталоги сервисов туннеля
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ slipstream_conf_dir }}"
+        - "{{ proxy_conf_dir }}"
+
+    # ── SOCKS5 с раздельными учётками ───────────────────────────────────────
+    # Без пароля туннелем мог пользоваться любой, кто узнал домен: он виден
+    # и оператору, и в логах каждого резолвера по пути.
+
+    # Ключи net.netfilter.* появляются только вместе с модулем nf_conntrack, а
+    # systemd-sysctl стартует раньше, чем его подтянут ufw или docker. Без явной
+    # загрузки настройки ниже молча терялись после каждой перезагрузки (сервер
+    # перезагружается сам после обновлений) и жили только до неё.
+    - name: Загрузить nf_conntrack и закрепить его на перезагрузки
+      community.general.modprobe:
+        name: nf_conntrack
+        state: present
+        persistent: present
+      notify: Reload sysctl for slipstream
+
+    # Порт 53 открыт наружу, к нему стучатся резолверы со всего света. На машине
+    # с гигабайтом памяти таблица соединений ядра переполняется быстро, а когда она
+    # полна — теряются любые пакеты, включая SSH.
+    - name: Расширить таблицу соединений под публичный DNS
+      ansible.builtin.copy:
+        content: |
+          net.netfilter.nf_conntrack_max = {{ slipstream_conntrack_max }}
+          net.netfilter.nf_conntrack_udp_timeout = 30
+          net.netfilter.nf_conntrack_udp_timeout_stream = 60
+        dest: /etc/sysctl.d/99-slipstream-conntrack.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload sysctl for slipstream
+
+    - name: Скачать пакет 3proxy
+      ansible.builtin.get_url:
+        url: "{{ proxy_deb_url }}"
+        dest: "{{ slipstream_dist_dir }}/3proxy-{{ proxy_version }}.deb"
+        checksum: "{{ proxy_deb_checksum }}"
+        owner: root
+        group: root
+        mode: "0644"
+      retries: 3
+      delay: 5
+      register: proxy_download
+      until: proxy_download is succeeded
+
+    - name: Установить 3proxy
+      ansible.builtin.apt:
+        deb: "{{ slipstream_dist_dir }}/3proxy-{{ proxy_version }}.deb"
+        state: present
+      # На свежем сервере в check пакет ещё не скачан — apt читает .deb и упал бы.
+      when: not ansible_check_mode
+
+    # Каталог заводит пакет, но в check-режиме его ещё нет, а роль должна собираться
+    # и на машине, где .deb ставили руками с другой раскладкой.
+    - name: Создать каталог логов SOCKS
+      ansible.builtin.file:
+        path: "{{ proxy_log_dir }}"
+        state: directory
+        owner: "{{ proxy_user }}"
+        group: "{{ proxy_user }}"
+        mode: "0750"
+
+    - name: Настроить SOCKS5
+      ansible.builtin.template:
+        src: 3proxy.cfg.j2
+        dest: "{{ proxy_conf_dir }}/3proxy.cfg"
+        owner: "{{ proxy_user }}"
+        group: "{{ proxy_user }}"
+        mode: "0600"
+      notify: Restart 3proxy
+
+    - name: Настроить сервис SOCKS5
+      ansible.builtin.template:
+        src: 3proxy.service.j2
+        dest: /etc/systemd/system/3proxy.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart 3proxy
+
+    # ── Сам туннель ─────────────────────────────────────────────────────────
+    # Скачиваем в версионный каталог и оттуда кладём бинарник на место. Так откат
+    # на прежнюю версию берёт её родной бинарник, а не оставляет новый под старым именем.
+    - name: Создать каталог под версию slipstream
+      ansible.builtin.file:
+        path: "{{ slipstream_dist_dir }}/{{ slipstream_version }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Скачиваем и распаковываем раздельно: unarchive не умеет сверять контрольную сумму.
+    - name: Скачать архив slipstream
+      ansible.builtin.get_url:
+        url: "{{ slipstream_url }}"
+        dest: "{{ slipstream_dist_dir }}/{{ slipstream_version }}/{{ slipstream_archive }}"
+        checksum: "{{ slipstream_checksum }}"
+        owner: root
+        group: root
+        mode: "0644"
+      retries: 3
+      delay: 5
+      register: slipstream_download
+      until: slipstream_download is succeeded
+
+    - name: Распаковать slipstream
+      ansible.builtin.unarchive:
+        src: "{{ slipstream_dist_dir }}/{{ slipstream_version }}/{{ slipstream_archive }}"
+        dest: "{{ slipstream_dist_dir }}/{{ slipstream_version }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+        creates: "{{ slipstream_dist_dir }}/{{ slipstream_version }}/slipstream-server"
+      # На свежем сервере в check архива нет — распаковывать нечего.
+      when: not ansible_check_mode
+
+    - name: Положить бинарник на место
+      ansible.builtin.copy:
+        src: "{{ slipstream_dist_dir }}/{{ slipstream_version }}/slipstream-server"
+        dest: "{{ slipstream_bin }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: not ansible_check_mode
+      notify: Restart slipstream
+
+    - name: Настроить сервис туннеля
+      ansible.builtin.template:
+        src: slipstream.service.j2
+        dest: /etc/systemd/system/slipstream.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart slipstream
+
+    # ── Выдача доступа ───────────────────────────────────────────────────────
+
+    - name: Записать настройки для команды выдачи доступа
+      ansible.builtin.copy:
+        content: |
+          {
+            "domain": "{{ slipstream_domain }}",
+            "resolver": "{{ slipstream_default_resolver }}",
+            "users_file": "{{ slipnet_users_file }}",
+            "proxy_users_file": "{{ proxy_users_file }}",
+            "proxy_user": "{{ proxy_user }}"
+          }
+        dest: "{{ slipnet_settings_dir }}/settings.json"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Установить команду выдачи доступа
+      ansible.builtin.copy:
+        src: slipnet-user
+        dest: /usr/local/bin/slipnet-user
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Раньше пароли лежали в каталоге туннеля. Переносим, иначе уже выданные
+    # профили перестанут работать после первого же прогона с новой ролью.
+    - name: Проверить, остался ли список пользователей на старом месте
+      ansible.builtin.stat:
+        path: "{{ slipstream_conf_dir }}/users.json"
+      register: slipnet_legacy_users
+
+    - name: Перенести список пользователей на новое место
+      ansible.builtin.command:
+        cmd: mv {{ slipstream_conf_dir }}/users.json {{ slipnet_users_file }}
+        creates: "{{ slipnet_users_file }}"
+      when:
+        - slipnet_legacy_users.stat.exists
+        - not ansible_check_mode
+
+    # Если новый файл уже был (mv выше пропущен), старый с паролями остался бы лежать
+    # в каталоге, куда пишет демон, — убираем его: содержимое уже перенесено.
+    - name: Убрать устаревший список пользователей со старого места
+      ansible.builtin.file:
+        path: "{{ slipstream_conf_dir }}/users.json"
+        state: absent
+
+    - name: Убрать устаревший файл настроек из каталога туннеля
+      ansible.builtin.file:
+        path: "{{ slipstream_conf_dir }}/tunnel.json"
+        state: absent
+
+    - name: Завести пустой список учёток прокси
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ proxy_users_file }}"
+        owner: "{{ proxy_user }}"
+        group: "{{ proxy_user }}"
+        mode: "0600"
+        force: false
+
+    # cert/key/seed, созданные прежними прогонами под root, отдаём сервисной учётке —
+    # иначе туннель, перезапущенный уже под slipstream, не прочтёт их.
+    - name: Отдать каталог туннеля сервисной учётке
+      ansible.builtin.file:
+        path: "{{ slipstream_conf_dir }}"
+        owner: "{{ slipstream_user }}"
+        group: "{{ slipstream_user }}"
+        recurse: true
+      when: not ansible_check_mode
+
+    # То же для 3proxy: файл учёток и конфиг, созданные прежде под root, отдаём его
+    # учётке, иначе 3proxy, стартующий уже под proxy, не прочтёт их и не поднимется.
+    - name: Отдать каталог 3proxy его учётке
+      ansible.builtin.file:
+        path: "{{ proxy_conf_dir }}"
+        owner: "{{ proxy_user }}"
+        group: "{{ proxy_user }}"
+        recurse: true
+      when: not ansible_check_mode
+
+    # ── Запуск ───────────────────────────────────────────────────────────────
+    - name: Запустить сервисы
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+      loop:
+        - 3proxy
+        - slipstream
+      when: not ansible_check_mode
+
+    # Иначе проверка ниже смотрела бы на состояние ДО перезапуска: handlers сами
+    # выполняются в конце play, и прогон был бы зелёным при неподнявшемся туннеле.
+    - name: Применить накопившиеся перезапуски
+      ansible.builtin.meta: flush_handlers
+
+    # Файл учёток производный от списка пользователей: восстанавливаем, если он
+    # потерялся или разъехался (например, после ручной правки).
+    - name: Пересобрать учётки прокси из списка пользователей
+      ansible.builtin.command: /usr/local/bin/slipnet-user sync
+      register: slipnet_sync
+      changed_when: "'CHANGED' in slipnet_sync.stdout"
+      failed_when: slipnet_sync.rc != 0
+      when: not ansible_check_mode
+
+    # wait_for умеет только TCP, а туннель слушает UDP — проверяем через сокеты ядра.
+    - name: Убедиться, что туннель занял порт DNS
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail && ss -ulpn |
+          grep -q ':{{ slipstream_listen_port }} .*slipstream'
+        executable: /bin/bash
+      register: slipstream_listen_check
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: slipstream_listen_check.rc == 0
+      when: not ansible_check_mode
+
+    - name: Напомнить про выдачу доступа
+      ansible.builtin.debug:
+        msg: >-
+          Туннель поднят. Доступ выдаётся командой на сервере:
+          slipnet-user add <имя> — заведёт пользователя и напечатает ссылку для SlipNet.
+          Без пользователя туннель не пропустит никого: SOCKS требует пароль.
+
+# Туннель выключен — гасим сервисы, установку при этом не трогаем.
+- name: Остановить туннель, если он выключен
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - slipstream
+    - 3proxy
+  when:
+    - not slipstream_enabled | bool
+    - not ansible_check_mode

@@ -1,0 +1,222 @@
+---
+# Входная нода цепочки: Reality-сервер под видом разрешённого сайта принимает
+# клиентов и вторым слоем Reality заворачивает их на выходную ноду. Смысл — дать
+# клиенту локальный адрес входа (мимо трансграничного шейпинга и белых списков),
+# оставив реальный выход на зарубежной ноде.
+
+- name: Пропустить xray-entry, пока не задан upstream
+  ansible.builtin.debug:
+    msg: >-
+      Для {{ inventory_hostname }} не задан xray_entry_upstream_address — входная
+      нода не разворачивается. Укажите адрес и ключи выходной ноды в host_vars.
+  when: not xray_entry_enabled | bool or xray_entry_upstream_address | length == 0
+
+- name: Развернуть входную ноду
+  when: xray_entry_enabled | bool and xray_entry_upstream_address | length > 0
+  block:
+    - name: Проверить, что заданы все параметры выходной ноды
+      ansible.builtin.assert:
+        that:
+          - xray_entry_upstream_uuid | length > 0
+          - xray_entry_upstream_public_key | length > 0
+          - xray_entry_upstream_short_id | length > 0
+          - xray_entry_upstream_sni | length > 0
+        fail_msg: >-
+          Не хватает параметров выходной ноды (uuid/public_key/short_id/sni).
+          uuid — в vault.yaml, остальное — в vars.yaml входной ноды.
+        quiet: true
+
+    # Домена прикрытия в дефолтах намеренно нет. Тот, что стоял бы здесь, оказался
+    # бы у всех, кто развернул проект, — и первым попал бы в списки, по которым
+    # такие каналы ищут. Как выбирать — PROXY.md.
+    - name: Проверить, что выбран домен прикрытия
+      ansible.builtin.assert:
+        that: xray_entry_sni | length > 0
+        fail_msg: >-
+          Задайте xray_entry_sni в host_vars входной ноды — сайт из белого списка
+          оператора, живой и доступный с этой ноды. Свой, не из чужой инструкции.
+        quiet: true
+
+    - name: Завести системную учётку для xray
+      ansible.builtin.user:
+        name: "{{ xray_entry_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Поставить unzip для распаковки релиза
+      ansible.builtin.apt:
+        name: unzip
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Создать каталоги
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ xray_entry_dir }}"
+          group: root
+          mode: "0755"
+        # Ключи и конфиг читает только демон: каталог за root, группа — учётка
+        # сервиса, иначе она не сможет войти в каталог.
+        - path: "{{ xray_entry_conf_dir }}"
+          group: "{{ xray_entry_user }}"
+          mode: "0750"
+
+    - name: Узнать версию установленного бинарника
+      ansible.builtin.slurp:
+        src: "{{ xray_entry_dir }}/.version"
+      register: xray_entry_installed
+      failed_when: false
+
+    # Готовый бинарник — не сборка, как у dnstt: XTLS публикует релизы, качаем zip
+    # и распаковываем один файл. Обновляется только при смене версии.
+    - name: Скачать и распаковать Xray-core
+      ansible.builtin.unarchive:
+        src: "{{ xray_entry_url }}"
+        dest: "{{ xray_entry_dir }}"
+        include:
+          - xray
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - (xray_entry_installed.content | default('') | b64decode | trim) != xray_entry_version
+        - not ansible_check_mode
+      notify: Restart xray-entry
+
+    - name: Запомнить установленную версию
+      ansible.builtin.copy:
+        content: "{{ xray_entry_version }}\n"
+        dest: "{{ xray_entry_dir }}/.version"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Ключи и uuid создаются один раз: перегенерация обнулит все выданные профили,
+    # потому что клиент проверяет сервер по этому публичному ключу и заходит по uuid.
+    # creates держит задачу идемпотентной без отдельной проверки stat.
+    - name: Сгенерировать Reality-ключи входной ноды
+      ansible.builtin.shell:
+        cmd: >-
+          set -euo pipefail;
+          OUT=$({{ xray_entry_bin }} x25519);
+          echo "$OUT" | grep -iE 'private' | awk '{print $NF}' > {{ xray_entry_privkey }};
+          echo "$OUT" | grep -iE 'public|password' | awk '{print $NF}' > {{ xray_entry_pubkey }}
+        creates: "{{ xray_entry_privkey }}"
+        # pipefail нужен, чтобы пустой вывод x25519 не молча записался в ключ;
+        # по умолчанию shell идёт через dash, где этой опции нет.
+        executable: /bin/bash
+      when: not ansible_check_mode
+
+    - name: Сгенерировать uuid клиента
+      ansible.builtin.command:
+        cmd: "{{ xray_entry_bin }} uuid"
+        creates: "{{ xray_entry_uuid_file }}"
+      register: xray_entry_uuid_gen
+      when: not ansible_check_mode
+
+    - name: Сохранить uuid клиента
+      ansible.builtin.copy:
+        content: "{{ xray_entry_uuid_gen.stdout }}\n"
+        dest: "{{ xray_entry_uuid_file }}"
+        owner: root
+        group: "{{ xray_entry_user }}"
+        mode: "0440"
+      when:
+        - not ansible_check_mode
+        - xray_entry_uuid_gen.changed
+
+    - name: Сгенерировать shortId
+      ansible.builtin.shell:
+        cmd: "openssl rand -hex 8 > {{ xray_entry_sid_file }}"
+        creates: "{{ xray_entry_sid_file }}"
+      when: not ansible_check_mode
+
+    - name: Отдать ключи демону
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        owner: root
+        group: "{{ xray_entry_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ xray_entry_privkey }}"
+          mode: "0440"
+        - path: "{{ xray_entry_pubkey }}"
+          mode: "0444"
+        - path: "{{ xray_entry_sid_file }}"
+          mode: "0440"
+      when: not ansible_check_mode
+
+    # Приватный ключ, uuid и shortId нужны инлайн в config.json — читаем их с
+    # сервера. failed_when: false и default('') держат сухой прогон живым, пока
+    # файлов ещё нет; в боевом прогоне они уже сгенерированы выше.
+    - name: Прочитать секреты для конфига
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ xray_entry_privkey }}"
+        - "{{ xray_entry_uuid_file }}"
+        - "{{ xray_entry_sid_file }}"
+      register: xray_entry_secrets
+      failed_when: false
+      no_log: true
+
+    - name: Собрать значения секретов
+      ansible.builtin.set_fact:
+        xray_entry_reality_priv: "{{ xray_entry_secrets.results[0].content | default('') | b64decode | trim }}"
+        xray_entry_client_uuid: "{{ xray_entry_secrets.results[1].content | default('') | b64decode | trim }}"
+        xray_entry_reality_sid: "{{ xray_entry_secrets.results[2].content | default('') | b64decode | trim }}"
+      no_log: true
+
+    - name: Записать конфиг
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ xray_entry_conf_dir }}/config.json"
+        owner: root
+        group: "{{ xray_entry_user }}"
+        mode: "0640"
+      notify: Restart xray-entry
+
+    - name: Установить команду показа профиля
+      ansible.builtin.copy:
+        src: xray-entry-profile
+        dest: /usr/local/bin/xray-entry-profile
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Настроить сервис xray-entry
+      ansible.builtin.template:
+        src: xray-entry.service.j2
+        dest: /etc/systemd/system/xray-entry.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart xray-entry
+
+    - name: Включить xray-entry
+      ansible.builtin.systemd_service:
+        name: xray-entry
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: not ansible_check_mode
+
+# Иначе выключение роли просто перестаёт её разворачивать, а служба продолжает
+# работать со старым конфигом и ключами.
+- name: Остановить входную ноду, если она выключена
+  ansible.builtin.systemd_service:
+    name: xray-entry
+    state: stopped
+    enabled: false
+  when:
+    - not xray_entry_enabled | bool
+    - not ansible_check_mode
+  failed_when: false

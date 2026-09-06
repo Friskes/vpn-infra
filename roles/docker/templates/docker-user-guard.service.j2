@@ -1,0 +1,15 @@
+[Unit]
+Description=Deny-by-default for Docker-published ports (DOCKER-USER)
+# Цепочку создаёт сам докер при старте, поэтому только после него. И после ufw:
+# перезагрузка ufw пересобирает свои цепочки, но DOCKER-USER не трогает.
+After=docker.service ufw.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/sbin/docker-user-guard
+
+[Install]
+WantedBy=multi-user.target

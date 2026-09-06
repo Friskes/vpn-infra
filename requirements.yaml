@@ -1,0 +1,11 @@
+---
+# Ставится в ./.ansible/collections: make install
+# Версии фиксированы: свежие мажоры не поддерживают ansible-core 2.17.
+collections:
+  - name: community.docker
+    version: 4.7.0
+  - name: community.general
+    version: 11.2.1
+  # Нужна для управления authorized_keys (роль ssh).
+  - name: ansible.posix
+    version: 1.6.2

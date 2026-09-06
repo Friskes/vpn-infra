@@ -1,0 +1,119 @@
+---
+slipstream_enabled: true
+
+# Готовый бинарник из релиза: собирать на этом VPS нельзя — внутри Rust с picoquic,
+# а тут одно ядро и гигабайт памяти.
+slipstream_version: "v0.1.1"
+slipstream_archive: "slipstream-linux-x86_64.tar.gz"
+slipstream_url: >-
+  https://github.com/Mygod/slipstream-rust/releases/download/{{ slipstream_version }}/{{ slipstream_archive }}
+slipstream_checksum: "sha256:5572d407d685a4a87e4de5a7121566d48ac719068e50ad69705793dc6d9ff682"
+
+slipstream_bin: /usr/local/bin/slipstream-server
+slipstream_conf_dir: /etc/slipstream
+slipstream_dist_dir: /opt/slipstream
+
+# Пароли пользователей и настройки команды выдачи доступа держим отдельно от
+# каталога туннеля: демону, который разбирает трафик из интернета, доступ к ним не нужен.
+slipnet_settings_dir: /etc/slipnet
+slipnet_state_dir: /var/lib/slipnet
+slipnet_users_file: "{{ slipnet_state_dir }}/users.json"
+
+# Домен туннеля и резолвер задаются на каждый сервер отдельно —
+# в host_vars/<имя>/vars.yaml. Здесь пусто намеренно: домен у каждого сервера
+# свой (один поддомен на два сервера работать не будет), и молчаливый дефолт
+# увёл бы трафик нового сервера на чужую зону.
+slipstream_domain: ""
+slipstream_default_resolver: ""
+
+# Слушаем DNS на внешнем адресе. Оставлять "::" нельзя: порт 53 на localhost занят
+# системным резолвером systemd-resolved.
+slipstream_listen_host: "{{ server_ip }}"
+slipstream_listen_port: 53
+
+slipstream_max_connections: 256
+slipstream_idle_timeout: 60
+
+# Публичный порт 53 собирает запросы со всего света, а таблица соединений ядра
+# на слабой машине переполняется незаметно — и тогда теряются любые пакеты,
+# включая SSH. Дефолт ядра при 1 ГБ памяти — как раз 65536, поэтому берём вдвое
+# больше: записи выделяются по мере появления соединений, пустой запас памяти не ест.
+slipstream_conntrack_max: 131072
+
+# Сертификат и ключ сервер создаёт сам при первом запуске (ECDSA P-256).
+# Клиенту они не нужны: он не проверяет сертификат, шифрование поверх уже есть.
+slipstream_cert: "{{ slipstream_conf_dir }}/cert.pem"
+slipstream_key: "{{ slipstream_conf_dir }}/key.pem"
+
+# Seed переживает перезапуск сервиса: без него клиенты после рестарта висят
+# до истечения таймаута вместо мгновенного переподключения.
+slipstream_reset_seed: "{{ slipstream_conf_dir }}/reset-seed"
+
+# ── SOCKS5 за туннелем ──────────────────────────────────────────────────────
+# 3proxy вместо microsocks: тот умеет ровно одного пользователя, а нужно выдавать
+# доступ нескольким людям и уметь отзывать его по одному.
+# В репозиториях Ubuntu пакета нет, ставим официальный .deb.
+proxy_version: "0.9.8"
+proxy_deb_url: >-
+  https://github.com/3proxy/3proxy/releases/download/{{ proxy_version }}/3proxy-{{ proxy_version }}.x86_64.deb
+proxy_deb_checksum: "sha256:539f918728cef51e37c6ae077adab97cb354da2186d6071160fa68d5873a53c7"
+
+# Официальный .deb кладёт бинарник в /bin, а не в /usr/local/bin.
+proxy_bin: /bin/3proxy
+proxy_conf_dir: /etc/3proxy
+proxy_users_file: "{{ proxy_conf_dir }}/users"
+proxy_host: "127.0.0.1"
+proxy_port: 1081
+
+# Каталог логов заводит сам пакет, на него же указывает симлинк /var/log/3proxy.
+# Свой каталог не берём: переустановка .deb вернула бы пакетный, и логи разъехались бы.
+proxy_log_dir: /usr/local/3proxy/logs
+proxy_log_file: "{{ proxy_log_dir }}/3proxy.log"
+
+# Сколько суточных файлов хранить. В логе видно, на какие адреса ходили пользователи,
+# поэтому неделя, а не «навсегда».
+proxy_log_keep: 7
+
+# Оба демона работают под непривилегированными учётками, а не под root: RCE в коде,
+# разбирающем недоверенный трафик из интернета, тогда не даёт чтения всех паролей
+# и власти над системой. proxy уже есть в Debian (uid 13), slipstream заводим сами.
+slipstream_user: slipstream
+proxy_user: proxy
+
+# Потолок одновременных соединений на весь сервис (0 = без ограничения).
+proxy_max_connections: 512
+
+# Куда пользователям туннеля ходить нельзя. Главное — loopback: на нём живут
+# админка wg-easy и SSH, без запрета выданный профиль открывал бы их любому, кому
+# досталась ссылка. Плюс сам публичный адрес сервера (на него соединение уходит
+# через loopback-hairpin, где ufw пропускает всё) и IPv4-mapped-адреса того же
+# loopback. Заодно закрыты частные сети — на случай соседства с чем-то ещё.
+proxy_denied_targets:
+  - "{{ server_ip }}"
+  - 127.0.0.0/8
+  # Ядро отправляет соединение на 0.0.0.0 (и на ::) в loopback, минуя запрет выше.
+  - 0.0.0.0/8
+  - ::1
+  - "::/128"
+  - "::ffff:0:0/96"
+  # Публичный IPv6 сервера: на нём слушает dnstt, а SSH и прочее слушают ::.
+  # Без этой строки запрет «на сам сервер не ходить» работал только для IPv4.
+  - "{{ ansible_default_ipv6.address | default('::1') }}"
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 169.254.0.0/16
+  - "fc00::/7"
+  - "fe80::/10"
+
+# Порты назначения, закрытые для всех. Почтовые — чтобы через сервер не погнали
+# спам: адрес один на все сервисы, и попадание в блок-листы кладёт разом всё.
+proxy_denied_ports:
+  - 25
+  - 465
+  - 587
+  - 2525
+  - 137
+  - 138
+  - 139
+  - 445

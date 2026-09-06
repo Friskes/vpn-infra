@@ -1,0 +1,50 @@
+---
+# Входная нода: Reality-сервер в юрисдикции клиента (например, в РФ), который
+# принимает соединение под видом разрешённого сайта и перекидывает трафик на
+# выходную ноду вторым слоем Reality. Оператор видит соединение с локальным
+# адресом и знакомым SNI — трафик не идёт под трансграничный шейпинг и не режется
+# белыми списками. Разворачивается только на хостах группы entry.
+#
+# Проверено на связке «нода внутри страны → нода за границей»: канал между ними
+# 26 Мбит/с в один поток и 94 Мбит/с в несколько, задержка +34 мс. Наружу цепочка
+# отдаёт адрес выходной ноды. Как выбрать проходящий адрес входа — OPERATORS.md,
+# раздел «Входная нода».
+xray_entry_enabled: true
+
+xray_entry_version: "v26.3.27"
+xray_entry_url: "https://github.com/XTLS/Xray-core/releases/download/{{ xray_entry_version }}/Xray-linux-64.zip"
+xray_entry_dir: /opt/xray-entry
+xray_entry_bin: "{{ xray_entry_dir }}/xray"
+xray_entry_conf_dir: /etc/xray-entry
+xray_entry_user: xray
+
+# Порт и маскировка для клиентов. SNI — сайт из белого списка оператора: Reality
+# проксирует к нему настоящее рукопожатие, поэтому он должен реально работать и
+# быть доступен с входной ноды. Vision требует Xray-core ≥ 26.3.27 и на клиенте.
+#
+# Пусто намеренно: домен, поставленный здесь дефолтом, оказался бы у всех, кто
+# развернул проект, и первым попал бы в списки, по которым такие каналы ищут.
+# Задаётся в host_vars входной ноды, критерии выбора — в PROXY.md.
+xray_entry_port: 8443
+xray_entry_sni: ""
+xray_entry_fingerprint: "chrome"
+
+# Секреты входной ноды генерируются на сервере и в репозиторий не попадают:
+# приватный Reality-ключ, uuid клиента и shortId живут только здесь. Публичный
+# ключ и параметры для клиента печатает команда xray-entry-profile.
+xray_entry_privkey: "{{ xray_entry_conf_dir }}/private.key"
+xray_entry_pubkey: "{{ xray_entry_conf_dir }}/public.key"
+xray_entry_uuid_file: "{{ xray_entry_conf_dir }}/client.uuid"
+xray_entry_sid_file: "{{ xray_entry_conf_dir }}/short.id"
+
+# ── Выходная нода (upstream) ────────────────────────────────────────
+# Куда входная нода заворачивает расшифрованный трафик — на Reality-инбаунд
+# выходной ноды. Параметры берутся из её панели и задаются в host_vars входной
+# ноды; uuid — секрет доступа, он живёт в vault.yaml рядом. Пусто — роль не встаёт.
+xray_entry_upstream_address: ""
+xray_entry_upstream_port: 443
+xray_entry_upstream_uuid: ""
+xray_entry_upstream_public_key: ""
+xray_entry_upstream_short_id: ""
+xray_entry_upstream_sni: ""
+xray_entry_upstream_fingerprint: "firefox"

@@ -1,0 +1,40 @@
+---
+# Второй DNS-туннель, рядом со Slipstream. Нужен там, где оператор душит поток
+# UDP-ответов: dnstt умеет ходить к резолверу по TCP, DoT и DoH, а их шейпинг
+# DNS не трогает. Проверено на Мегафоне: UDP давал 0,3 КБ/с, TCP и DoT до
+# резолвера Яндекса открыты и отвечают за 82–124 мс.
+#
+# Домен задаётся на каждый сервер отдельно, в host_vars/<имя>/vars.yaml.
+# Пусто — роль не разворачивает ничего.
+dnstt_domain: ""
+
+# Выключатель по образцу соседних ролей. По умолчанию включается сам, когда задан
+# домен; выставленный в false останавливает и отключает уже поднятую службу.
+dnstt_enabled: "{{ dnstt_domain | length > 0 }}"
+
+# Порт 53 на IPv4 занят Slipstream, поэтому dnstt слушает IPv6-адрес сервера.
+# Разные адреса — разные зоны, туннели не мешают друг другу и обслуживаются
+# каждый своей NS-записью.
+dnstt_listen_host: "{{ ansible_default_ipv6.address | default('') }}"
+dnstt_listen_port: 53
+
+dnstt_version: "v1.20260501.0"
+dnstt_repo: "https://www.bamsoftware.com/git/dnstt.git"
+dnstt_src_dir: /opt/dnstt
+dnstt_bin: /usr/local/bin/dnstt-server
+
+# Ключи Noise: приватный остаётся на сервере, публичный вписывается в клиент.
+# Генерируются один раз — при перегенерации перестанут работать выданные профили.
+dnstt_conf_dir: /etc/dnstt
+dnstt_privkey: "{{ dnstt_conf_dir }}/server.key"
+dnstt_pubkey: "{{ dnstt_conf_dir }}/server.pub"
+
+# Туннель заканчивается на том же SOCKS5 с паролем, что и Slipstream: доступ
+# выдаётся одними и теми же учётками, отзывается тоже одной командой.
+dnstt_upstream: "{{ proxy_host | default('127.0.0.1') }}:{{ proxy_port | default(1081) }}"
+
+# Максимальный размер DNS-ответа. Дефолт самого dnstt — 1232; уменьшать имеет
+# смысл только на UDP-транспорте и только если крупные ответы теряются.
+dnstt_mtu: 0
+
+dnstt_user: dnstt

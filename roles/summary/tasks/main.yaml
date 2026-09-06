@@ -1,0 +1,41 @@
+---
+# Роль читает публичный ключ сама, а не полагается на факт из роли rustdesk:
+# иначе прогон по одному тегу (--tags summary) падал бы на неопределённой переменной.
+- name: Прочитать публичный ключ RustDesk
+  ansible.builtin.slurp:
+    src: "{{ rustdesk_data_dir }}/id_ed25519.pub"
+  register: summary_pub_slurp
+  failed_when: false
+
+- name: Проверить, требуется ли перезагрузка
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: summary_reboot_required
+
+- name: Создать локальный каталог для артефактов
+  ansible.builtin.file:
+    path: "{{ artifacts_dir }}/{{ inventory_hostname }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+
+- name: Сформировать локальную сводку подключения
+  ansible.builtin.template:
+    src: connection-info.md.j2
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/CONNECTION_INFO.md"
+    mode: "0644"
+  vars:
+    rustdesk_public_key: "{{ summary_pub_slurp.content | default('') | b64decode | trim }}"
+  delegate_to: localhost
+  become: false
+
+- name: Показать итог
+  ansible.builtin.debug:
+    msg: >-
+      Артефакты: {{ artifacts_dir }}/{{ inventory_hostname }}/.
+      Админки только через проброс: ssh -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }}
+      {{ '-L ' ~ xui_admin_port ~ ':127.0.0.1:' ~ xui_admin_port if xui_enabled | default(false) | bool else '' }}
+      root@{{ server_ip }}
+      {{ 'ВНИМАНИЕ: серверу нужна перезагрузка (обновилось ядро или системные библиотеки) — сделайте её вручную.'
+         if summary_reboot_required.stat.exists else '' }}

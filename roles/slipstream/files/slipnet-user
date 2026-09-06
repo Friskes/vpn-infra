@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Управление доступом к DNS-туннелю: пользователи SOCKS и ссылки для SlipNet.
+
+    slipnet-user add <имя> [резолверы] [bbr|dcubic]   завести и напечатать ссылку
+    slipnet-user link <имя> [резолверы] [bbr|dcubic]  ссылка существующего
+    slipnet-user list                                 показать всех
+    slipnet-user del <имя>                            отозвать доступ
+    slipnet-user sync                                 пересобрать учётки прокси
+
+Резолверов можно указать несколько через запятую — приложение раскидает запросы
+между ними. Управление потоком: bbr по умолчанию, dcubic там, где канал теряет
+пакеты (см. TUNNEL.md).
+
+Ссылка вставляется в SlipNet через «Import from URI» — все поля профиля
+заполняются сами, вводить вручную ничего не нужно.
+"""
+import base64
+import json
+import os
+import pwd
+import re
+import secrets
+import subprocess
+import sys
+
+# Единственный захардкоженный путь: остальное роль кладёт сюда при развёртывании,
+# чтобы смена каталогов в defaults не расходилась со скриптом.
+SETTINGS_FILE = "/etc/slipnet/settings.json"
+
+# Формат профиля SlipNet: slipnet://<base64 полей через |>.
+# Порядок полей менять нельзя — приложение читает их по номеру позиции.
+PROFILE_VERSION = "28"
+
+# Управление потоком QUIC. На МТС bbr вдвое быстрее, но там рекурсор оператора
+# доносит ответы почти без потерь. Где путь рвётся (проверено на Мегафоне),
+# bbr схлопывается до сотен байт в секунду, а dcubic продолжает отдавать
+# полноразмерные ответы — его же upstream советует для рекурсивного режима.
+CONGESTION_CHOICES = ("bbr", "dcubic")
+DEFAULT_CONGESTION = "bbr"
+
+
+def settings():
+    if not os.path.exists(SETTINGS_FILE):
+        sys.exit("Нет %s — разверните роль slipstream" % SETTINGS_FILE)
+    with open(SETTINGS_FILE) as f:
+        return json.load(f)
+
+
+def load_users(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (ValueError, OSError) as exc:
+        sys.exit("Не читается %s: %s" % (path, exc))
+
+
+def atomic_write(path, text, owner=None):
+    """Пишем через временный файл: обрыв на середине не оставит битый файл.
+    owner (если задан) — кому отдать файл, чтобы сервис читал его под своей учёткой."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)
+    if owner:
+        ent = pwd.getpwnam(owner)
+        os.chown(tmp, ent.pw_uid, ent.pw_gid)
+    os.replace(tmp, path)
+
+
+def save_json(path, data):
+    atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def build_link(domain, resolvers, username, password, profile_name, congestion):
+    """Собираем профиль SlipNet: тип Slipstream, наш SOCKS с паролем."""
+    fields = [
+        PROFILE_VERSION,
+        "ss",                      # тип туннеля: Slipstream
+        profile_name,
+        domain,
+        # Резолвер: host:port:authoritative. Несколько — через запятую, приложение
+        # раскидывает запросы между ними.
+        ",".join("%s:53:0" % r for r in resolvers),
+        "0",                       # authoritative mode выключен
+        "400",                     # keep-alive, мс
+        congestion,                # управление потоком
+        "1080",                    # локальный порт приложения
+        "127.0.0.1",
+        "0",                       # GSO выключен: через VpnService ненадёжен
+        "",                        # публичный ключ dnstt — Slipstream не нужен
+        username,
+        password,
+        "0", "", "", "22", "0", "127.0.0.1", "0",  # блок SSH, не используется
+        "",                        # DoH URL
+        "udp",                     # транспорт DNS
+        "password",                # тип авторизации SSH
+        "", "", "",                # ключ SSH, пароль ключа, мосты Tor
+        "0",                       # dnstt authoritative
+        "443", "", "",             # блок NaiveProxy
+        "0", "", "0", "0", "",     # блокировка профиля
+        "0", "",                   # скрытие резолверов
+        "0",                       # NoizDNS stealth
+        "0",                       # ограничение размера запроса
+        "1080",                    # порт SOCKS5-сервера
+        "0", "txt", "101", "0", "0", "0", "0", "0", "0",  # блок VayDNS
+        "0", "", "", "8080", "",   # SSH через TLS и HTTP-прокси
+        "0", "/", "1", "",         # SSH через WebSocket
+        "",                        # payload перед SSH-рукопожатием
+        "fanout",                  # режим резолверов при списке из нескольких
+        "3",                       # сколько резолверов на запрос
+        "", "tls", "ws", "/", "", "443", "0", "", "0", "",  # блок VLESS
+        "0", "0", "0",             # обход DPI
+        "0", "", "0", "",          # прочее из свежих версий
+    ]
+    if any("|" in str(f) for f in fields):
+        sys.exit("В данных профиля есть символ | — он разделяет поля, профиль будет битым")
+    data = "|".join(fields).encode()
+    return "slipnet://" + base64.b64encode(data).decode()
+
+
+def write_proxy_users(cfg, users):
+    """Список учёток для 3proxy. Слово users обязательно, иначе include падает.
+    Файл отдаём учётке 3proxy — она читает его под собой. Возвращает True, если файл менялся."""
+    path = cfg["proxy_users_file"]
+    lines = ["users %s:CL:%s" % (name, u["password"]) for name, u in sorted(users.items())]
+    text = "\n".join(lines) + "\n"
+    old = ""
+    if os.path.exists(path):
+        with open(path) as f:
+            old = f.read()
+    atomic_write(path, text, owner=cfg.get("proxy_user"))
+    return text != old
+
+
+def apply(cfg, users, drop_sessions=False):
+    """Перечитываем учётки прокси. При отзыве доступа нужен полный перезапуск:
+    по SIGUSR1 уже установленные соединения продолжают работать.
+    Возвращает True, если файл учёток реально изменился."""
+    changed = write_proxy_users(cfg, users)
+    action = "restart" if drop_sessions else "reload-or-restart"
+    result = subprocess.run(
+        ["systemctl", action, "3proxy"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        sys.exit("Не удалось применить изменения (systemctl %s 3proxy):\n%s"
+                 % (action, result.stderr.strip()))
+    return changed
+
+
+def cmd_add(name, resolver=None, congestion=None):
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", name):
+        sys.exit("Имя: латиница, цифры, дефис и подчёркивание, до 32 символов")
+    cfg = settings()
+    users = load_users(cfg["users_file"])
+    if name in users:
+        sys.exit("Пользователь %s уже есть. Ссылку покажет: slipnet-user link %s" % (name, name))
+
+    users[name] = {"password": secrets.token_urlsafe(12)}
+    save_json(cfg["users_file"], users)
+    apply(cfg, users)
+    print("Пользователь %s добавлен.\n" % name)
+    cmd_link(name, resolver, congestion)
+
+
+def cmd_link(name, resolver=None, congestion=None):
+    cfg = settings()
+    users = load_users(cfg["users_file"])
+    if name not in users:
+        sys.exit("Нет пользователя %s" % name)
+    resolvers = [r.strip() for r in (resolver or cfg.get("resolver", "")).split(",") if r.strip()]
+    if not resolvers:
+        sys.exit("Укажите резолвер: slipnet-user link %s <IP>" % name)
+    congestion = (congestion or DEFAULT_CONGESTION).lower()
+    if congestion not in CONGESTION_CHOICES:
+        sys.exit("Управление потоком: %s" % " или ".join(CONGESTION_CHOICES))
+
+    link = build_link(cfg["domain"], resolvers, name, users[name]["password"], name, congestion)
+    print("Ссылка для SlipNet (Import from URI):\n")
+    print(link)
+    print("\nЕсли оператор или регион другой — резолвер нужен свой:")
+    print("  slipnet-user link %s <IP резолвера> [%s]" % (name, "|".join(CONGESTION_CHOICES)))
+    print("\nЛогин: %s\nПароль: %s" % (name, users[name]["password"]))
+
+
+def cmd_list():
+    cfg = settings()
+    users = load_users(cfg["users_file"])
+    if not users:
+        print("Пользователей нет. Завести: slipnet-user add <имя>")
+        return
+    print("Пользователи (%d):" % len(users))
+    for name in sorted(users):
+        print("  %s" % name)
+
+
+def cmd_del(name):
+    cfg = settings()
+    users = load_users(cfg["users_file"])
+    if name not in users:
+        sys.exit("Нет пользователя %s" % name)
+    del users[name]
+    save_json(cfg["users_file"], users)
+    apply(cfg, users, drop_sessions=True)
+    print("Доступ для %s отозван. Остальные подключения пересоздались." % name)
+
+
+def cmd_sync():
+    """Восстанавливает файл учёток прокси из списка пользователей.
+    Печатает CHANGED/NOCHANGE — по этому слову ansible решает, было ли изменение."""
+    cfg = settings()
+    users = load_users(cfg["users_file"])
+    changed = apply(cfg, users)
+    print("%s Файл учёток пересобран: пользователей %d."
+          % ("CHANGED" if changed else "NOCHANGE", len(users)))
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    cmd, args = sys.argv[1], sys.argv[2:]
+    if cmd == "add" and args:
+        cmd_add(*args[:3])
+    elif cmd == "link" and args:
+        cmd_link(*args[:3])
+    elif cmd == "list":
+        cmd_list()
+    elif cmd == "del" and args:
+        cmd_del(args[0])
+    elif cmd == "sync":
+        cmd_sync()
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

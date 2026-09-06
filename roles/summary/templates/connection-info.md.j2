@@ -1,0 +1,97 @@
+# Параметры подключения — {{ inventory_hostname }} ({{ server_ip }})
+
+Файл сгенерирован Ansible автоматически после развёртывания.
+
+## WireGuard (wg-easy)
+{% if not wireguard_enabled | default(true) | bool %}
+На этом сервере выключен (`wireguard_enabled: false`).
+{% else %}
+- Админка: только через SSH-проброс, снаружи и из самого VPN её нет.
+  ssh -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }} root@{{ server_ip }}
+  и открыть http://127.0.0.1:{{ wireguard_admin_port }}
+- Вход: только пароль (тот, что вы задали в vault)
+- VPN-порт: {{ wireguard_vpn_port }}/udp
+- Клиентское приложение: см. CLIENTS.md репозитория
+- Дальше: в админке создайте клиента, скачайте конфиг или отсканируйте QR в приложении.
+{% endif %}
+
+{% if not slipstream_enabled %}
+## DNS-туннель (Slipstream)
+
+На этом сервере выключен (`slipstream_enabled: false`). Запасного канала на случай
+белого списка оператора здесь нет.
+{% else %}
+## DNS-туннель (Slipstream)
+
+Запасной способ выйти в интернет там, где оператор режет всё, кроме белого списка,
+и обычный VPN не подключается вообще.
+
+- Домен туннеля: `{{ slipstream_domain }}`
+- Приложение: SlipNet — https://github.com/anonvector/SlipNet/releases
+
+**Доступ выдаётся командой на сервере**, вручную ничего заполнять не нужно:
+
+```bash
+slipnet-user add <имя>          # завести пользователя и получить ссылку
+slipnet-user link <имя> <IP>    # та же ссылка, но с другим резолвером
+slipnet-user list               # кто заведён
+slipnet-user del <имя>          # отозвать доступ
+```
+
+Команда печатает ссылку `slipnet://...` — в приложении «Import from URI»
+заполнит все поля профиля сам.
+
+Без заведённого пользователя туннель не пропустит никого: SOCKS требует пароль.
+Это важно — домен туннеля не секрет, его видно и оператору, и в логах резолверов,
+поэтому единственная защита от чужаков здесь именно пароль.
+
+Резолвер подбирается под оператора и регион: он должен быть **рекурсивным** и не
+блокироваться белым списком. По умолчанию в ссылку попадает `{{ slipstream_default_resolver }}`
+(задан для этого сервера в host_vars). Для другого оператора — передать свой адрес
+третьим аргументом. Как искать и мерить — в `TUNNEL.md` репозитория.
+
+В самом приложении дополнительно включить **Disable QUIC** (ускоряет открытие
+страниц) и оставить выключенными GSO и Authoritative Mode.
+{% endif %}
+
+## DNS-туннель (dnstt)
+{% if not dnstt_enabled | default(false) | bool %}
+На этом сервере выключен (`dnstt_domain` не задан). Это второй DNS-туннель, он нужен там,
+где оператор душит поток UDP-ответов и Slipstream не тянет.
+{% else %}
+- Домен: `{{ dnstt_domain }}`, слушает IPv6 (порт 53 на IPv4 занят Slipstream)
+- Публичный ключ и параметры профиля печатает на сервере команда `dnstt-profile`
+- Тип профиля в приложении — DNSTT, транспорт DoT или TCP: ради них туннель и поднят,
+  UDP оператор режет так же, как у Slipstream
+- Логин и пароль SOCKS5 — те же, что у Slipstream
+{% endif %}
+
+## Обход DPI (Reality, панель Xray)
+{% if not xui_enabled | default(false) | bool %}
+На этом сервере выключен (`xui_enabled: false`).
+{% else %}
+- Вход клиентов: `{{ server_ip }}:{{ xui_public_port }}`, VLESS + Reality
+- Админка: только через SSH-проброс, снаружи и из VPN её нет.
+  ssh -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
+  и открыть http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path | default('/<путь>/') }}
+- Профиль клиента: в панели у входа кнопка выдачи ссылки `vless://` и QR-кода
+- Против белых списков оператора не поможет — там фильтр смотрит на адрес назначения
+{% endif %}
+
+## RustDesk
+{% if not rustdesk_enabled %}
+На этом сервере выключен (`rustdesk_enabled: false`).
+{% else %}
+- ID-сервер (hbbs): `{{ server_ip }}:{{ rustdesk_id_port }}`
+- Relay-сервер (hbbr): `{{ server_ip }}:{{ rustdesk_relay_port }}`
+- Public Key:
+  ```
+  {{ rustdesk_public_key }}
+  ```
+- Файл ключа: `{{ artifacts_dir }}/{{ inventory_hostname }}/id_ed25519.pub`
+- В клиенте RustDesk: Настройки → Сеть → ID/Relay server → впишите IP и Key.
+{% endif %}
+
+## fail2ban
+- Джейл sshd активен: бан после {{ fail2ban_maxretry }} неудачных попыток на {{ fail2ban_bantime }}.
+- Проверка на сервере: `fail2ban-client status sshd`

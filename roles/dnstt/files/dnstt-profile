@@ -1,0 +1,22 @@
+#!/bin/sh
+# Печатает всё, что нужно вбить в клиент dnstt: домен, публичный ключ и
+# транспорты. Профиль руками — ссылки вида slipnet:// для dnstt мы не собираем,
+# полей там на порядок больше, чем стоит поддерживать.
+set -eu
+
+CONF=/etc/dnstt
+DOMAIN_FILE="$CONF/domain"
+PUBKEY_FILE="$CONF/server.pub"
+
+[ -f "$PUBKEY_FILE" ] || { echo "Нет $PUBKEY_FILE — разверните роль dnstt"; exit 1; }
+
+echo "Профиль DNSTT для приложения (тип туннеля — DNSTT):"
+echo
+echo "  Domain:     $(cat "$DOMAIN_FILE" 2>/dev/null || echo '— не задан')"
+echo "  Public Key: $(cat "$PUBKEY_FILE")"
+echo
+echo "  DNS Transport: DoT или TCP — именно ради них этот туннель и поднят,"
+echo "                 UDP оператор режет так же, как у Slipstream."
+echo "  DNS Resolver:  77.88.8.8:853 (Яндекс, DoT) — проверен под белым списком."
+echo
+echo "Логин и пароль SOCKS5 — те же, что у Slipstream: slipnet-user link <имя>."

@@ -1,0 +1,68 @@
+---
+- name: Поставить и настроить Docker
+  when: docker_enabled | bool
+  block:
+    - name: Установить Docker и зависимости для управления контейнерами
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # В сухом прогоне на свежем сервере apt ничего не ставит, и systemd-юнита docker
+    # ещё нет: без этой проверки make check падал бы ровно там, где им и страхуются —
+    # перед первым развёртыванием.
+    - name: Проверить, установлен ли Docker
+      ansible.builtin.stat:
+        path: /usr/bin/dockerd
+      register: docker_daemon_binary
+
+    - name: Включить автозапуск и запустить Docker
+      ansible.builtin.service:
+        name: docker
+        enabled: true
+        state: started
+      when: docker_daemon_binary.stat.exists
+
+    # ── Страховка от случайной публикации порта наружу ──────────────────────────
+    # Правила ufw к контейнерам не применяются: докер прокидывает порты в FORWARD,
+    # минуя INPUT. Пока публикации пишутся с префиксом 127.0.0.1 — всё закрыто, но
+    # это дисциплина, а не механизм. Здесь механизм: в DOCKER-USER всё, кроме явно
+    # разрешённых портов, отбрасывается.
+    - name: Установить страж цепочки DOCKER-USER
+      ansible.builtin.template:
+        src: docker-user-guard.sh.j2
+        dest: /usr/local/sbin/docker-user-guard
+        owner: root
+        group: root
+        mode: "0750"
+      when: docker_guard_enabled | bool
+      notify: Reapply docker guard
+
+    - name: Настроить сервис стража DOCKER-USER
+      ansible.builtin.template:
+        src: docker-user-guard.service.j2
+        dest: /etc/systemd/system/docker-user-guard.service
+        owner: root
+        group: root
+        mode: "0644"
+      when: docker_guard_enabled | bool
+      notify: Reapply docker guard
+
+    - name: Включить страж DOCKER-USER
+      ansible.builtin.systemd_service:
+        name: docker-user-guard
+        enabled: true
+        state: started
+        daemon_reload: true
+      when:
+        - docker_guard_enabled | bool
+        - docker_daemon_binary.stat.exists
+        - not ansible_check_mode
+
+- name: Сообщить, что Docker не нужен
+  ansible.builtin.debug:
+    msg: >-
+      Ни один контейнерный сервис не включён (wireguard_enabled, xui_enabled,
+      rustdesk_enabled) — Docker на сервер не ставится.
+  when: not docker_enabled | bool

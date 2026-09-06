@@ -1,0 +1,59 @@
+---
+# swap_enabled: false — подкачку просто не трогаем (уже существующую не убираем).
+- name: Настроить файл подкачки
+  when: swap_enabled
+  block:
+    - name: Создать файл подкачки
+      ansible.builtin.command:
+        cmd: "fallocate -l {{ swap_size_mb }}M {{ swap_file }}"
+        creates: "{{ swap_file }}"
+
+    - name: Ограничить права на файл подкачки
+      ansible.builtin.file:
+        path: "{{ swap_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: not ansible_check_mode
+
+    # Размечаем по факту (blkid), а не по «файл появился»: обрыв между fallocate
+    # и mkswap иначе навсегда оставил бы файл без swap-сигнатуры, и swapon падал бы
+    # «Invalid argument», роняя весь деплой на первой же роли.
+    - name: Определить, размечен ли файл подкачки
+      ansible.builtin.command: "blkid -o value -s TYPE {{ swap_file }}"
+      register: swap_blkid
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Разметить файл подкачки
+      ansible.builtin.command:
+        cmd: "mkswap {{ swap_file }}"
+      when:
+        - not ansible_check_mode
+        - swap_blkid.stdout | default('') != 'swap'
+      changed_when: true
+
+    - name: Прописать файл подкачки в fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "^{{ swap_file }}\\s"
+        line: "{{ swap_file }} none swap sw 0 0"
+        validate: "findmnt --verify --tab-file %s"
+
+    - name: Включить файл подкачки
+      ansible.builtin.command:
+        cmd: "swapon {{ swap_file }}"
+      when:
+        - ansible_swaptotal_mb | default(0) == 0
+        - not ansible_check_mode
+      changed_when: true
+
+    - name: Задать swappiness
+      ansible.builtin.copy:
+        content: "vm.swappiness = {{ swap_swappiness }}\n"
+        dest: /etc/sysctl.d/99-swappiness.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload sysctl

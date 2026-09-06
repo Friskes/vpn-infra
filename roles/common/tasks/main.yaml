@@ -1,0 +1,41 @@
+---
+- name: Обновить индекс пакетов и выполнить dist-upgrade
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    cache_valid_time: 3600
+  when: common_upgrade_packages | bool
+
+- name: Установить базовые пакеты
+  ansible.builtin.apt:
+    name: "{{ common_base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Автообновления ставят пакеты каждый день, но ядро подхватывается только после
+# перезагрузки. Раньше она была отключена, и сервер работал на старом ядре,
+# пока кто-нибудь не вспомнит перезагрузить вручную.
+- name: Настроить автоперезагрузку после автообновлений
+  ansible.builtin.copy:
+    content: |
+      Unattended-Upgrade::Automatic-Reboot "{{ 'true' if common_unattended_reboot else 'false' }}";
+      Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "{{ common_unattended_reboot_time }}";
+    dest: /etc/apt/apt.conf.d/51unattended-upgrades-reboot
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Проверить, требуется ли перезагрузка
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: common_reboot_required
+
+- name: Перезагрузить сервер при необходимости и дождаться его возврата
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+    post_reboot_delay: 30
+  when:
+    - common_auto_reboot | bool
+    - common_reboot_required.stat.exists
