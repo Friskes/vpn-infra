@@ -33,7 +33,10 @@
   .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(330px, 1fr); gap: 18px; align-items: start; }
   @media (max-width: 1040px) { .grid { grid-template-columns: 1fr; } }
 
-  .map-wrap { position: sticky; top: 18px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel); }
+  /* z-index обязателен: пункты списка шагов тоже позиционированы (position: relative),
+     и без него они рисуются поверх залипшей карты — на узком экране, где колонки
+     встают друг под друга, уезжающий вверх текст ползёт по карте. */
+  .map-wrap { position: sticky; top: 18px; z-index: 2; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel); }
   svg { display: block; width: 100%; height: auto; }
   .land { fill: var(--land); stroke: var(--land-edge); stroke-width: 1; }
   .region { fill: none; stroke: var(--region); stroke-width: .6; }
