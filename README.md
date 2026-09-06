@@ -13,6 +13,13 @@
 > хостит, никому не предоставляет доступ и ответственности за использование этих
 > материалов не несёт. Подробнее — [DISCLAIMER.md](DISCLAIMER.md).
 
+> [!TIP]
+> **Здесь только серверная часть. Клиентская — [vpn-configurator](https://github.com/Friskes/vpn-configurator).**
+> Программа с графическим интерфейсом берёт `.conf` из админки wg-easy и делает из
+> него конфиг с раздельным туннелированием: в VPN уходят только выбранные сервисы,
+> остальной интернет идёт напрямую и не теряет скорость. Windows и macOS, готовые
+> наборы адресов для YouTube, Discord, Telegram и ещё десятка сервисов.
+
 <!-- media: hero.gif — короткий клип: make deploy от начала до сводки CONNECTION_INFO.md -->
 
 ## Что можно поставить
@@ -192,10 +199,8 @@ pre-commit run --all-files # прогнать всё разом, не дожид
 
 ## Рядом
 
-- [vpn-configurator](https://github.com/Friskes/vpn-configurator) — программа для
-  создания конфигов с раздельным туннелированием: в VPN уходят только нужные
-  сервисы, остальной интернет идёт напрямую и не теряет скорость. Понимает
-  WireGuard, Amnezia, WireSock и NekoBox.
+- [vpn-configurator](https://github.com/Friskes/vpn-configurator) — клиентская часть
+  этого же набора: раздельное туннелирование для WireGuard, Amnezia, WireSock и NekoBox.
 - [SlipNet](https://github.com/anonvector/SlipNet) — Android-клиент DNS-туннелей,
   которым пользуются Slipstream и dnstt отсюда.
 
