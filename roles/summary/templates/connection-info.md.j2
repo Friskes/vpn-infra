@@ -7,7 +7,9 @@
 На этом сервере выключен (`wireguard_enabled: false`).
 {% else %}
 - Админка: только через SSH-проброс, снаружи и из самого VPN её нет.
-  ssh -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }} root@{{ server_ip }}
+  Команду запускайте на локальном компьютере из каталога проекта (`vpn-infra`),
+  не внутри SSH-сессии на сервере.
+  ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }} root@{{ server_ip }}
   и открыть http://127.0.0.1:{{ wireguard_admin_port }}
 - Вход: только пароль (тот, что вы задали в vault)
 - VPN-порт: {{ wireguard_vpn_port }}/udp
@@ -72,7 +74,9 @@ slipnet-user del <имя>          # отозвать доступ
 {% else %}
 - Вход клиентов: `{{ server_ip }}:{{ xui_public_port }}`, VLESS + Reality
 - Админка: только через SSH-проброс, снаружи и из VPN её нет.
-  ssh -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
+  Команду запускайте на локальном компьютере из каталога проекта (`vpn-infra`),
+  не внутри SSH-сессии на сервере.
+  ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
   и открыть http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path | default('/<путь>/') }}
 - Профиль клиента: в панели у входа кнопка выдачи ссылки `vless://` и QR-кода
 - Против белых списков оператора не поможет — там фильтр смотрит на адрес назначения
