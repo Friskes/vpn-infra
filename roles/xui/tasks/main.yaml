@@ -179,7 +179,7 @@
       ansible.builtin.debug:
         msg: >-
           Панель Xray поднята. Снаружи её нет: пробросьте порт —
-          ssh -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
+          ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
           и откройте http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path }}
           Дальше заведите вход VLESS + Reality на порт {{ xui_public_port }}.
 

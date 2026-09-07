@@ -2,21 +2,37 @@
 - name: Поставить и настроить Docker
   when: docker_enabled | bool
   block:
+    # Не смешиваем Ubuntu docker.io с уже установленным Docker CE: оба пакета
+    # тянут разные реализации containerd, которые объявляют взаимоисключающий
+    # конфликт (containerd.io vs containerd). Это особенно важно в --check:
+    # apt-get --simulate всё равно разрешает зависимости и падает на конфликте.
+    - name: Проверить, установлен ли Docker
+      ansible.builtin.stat:
+        path: /usr/bin/dockerd
+      register: docker_daemon_binary
+
     - name: Установить Docker и зависимости для управления контейнерами
       ansible.builtin.apt:
         name: "{{ docker_packages }}"
         state: present
         update_cache: true
         cache_valid_time: 3600
+      when: not docker_daemon_binary.stat.exists
+
+    # Если движок уже поставлен (например, docker-ce), docker_packages выше
+    # пропускается целиком вместе с docker.io. requests всё равно нужен на
+    # целевой машине для модулей community.docker.
+    - name: Установить Python-зависимость для управления контейнерами
+      ansible.builtin.apt:
+        name: python3-requests
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      when: docker_daemon_binary.stat.exists
 
     # В сухом прогоне на свежем сервере apt ничего не ставит, и systemd-юнита docker
     # ещё нет: без этой проверки make check падал бы ровно там, где им и страхуются —
     # перед первым развёртыванием.
-    - name: Проверить, установлен ли Docker
-      ansible.builtin.stat:
-        path: /usr/bin/dockerd
-      register: docker_daemon_binary
-
     - name: Включить автозапуск и запустить Docker
       ansible.builtin.service:
         name: docker
