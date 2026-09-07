@@ -18,8 +18,9 @@ xui_public_port: 443
 
 # Админка публикуется только на loopback — снаружи её нет. Открытая панель с
 # заводским паролем это самый частый способ, которым такие серверы угоняют.
-# Вход: ssh -i keys/vpn-infra -o IdentitiesOnly=yes -L 2053:127.0.0.1:2053
-# root@<сервер>, потом http://127.0.0.1:2053
+# Вход с локального ПК, из каталога проекта (путь к ключу относительный):
+#   ssh -i keys/vpn-infra -o IdentitiesOnly=yes -L 2053:127.0.0.1:2053 root@<сервер>
+# и открыть http://127.0.0.1:2053
 xui_admin_port: 2053
 xui_admin_publish: "127.0.0.1:{{ xui_admin_port }}:{{ xui_admin_port }}/tcp"
 

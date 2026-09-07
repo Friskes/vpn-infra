@@ -34,7 +34,9 @@
   ansible.builtin.debug:
     msg: >-
       Артефакты: {{ artifacts_dir }}/{{ inventory_hostname }}/.
-      Админки только через проброс: ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }}
+      Админки только через проброс:
+      ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes
+      -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }}
       {{ '-L ' ~ xui_admin_port ~ ':127.0.0.1:' ~ xui_admin_port if xui_enabled | default(false) | bool else '' }}
       root@{{ server_ip }}
       {{ 'ВНИМАНИЕ: серверу нужна перезагрузка (обновилось ядро или системные библиотеки) — сделайте её вручную.'
