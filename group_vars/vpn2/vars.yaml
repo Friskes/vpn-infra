@@ -52,8 +52,8 @@ ssh_key_file: "keys/vpn-infra"
 ansible_ssh_private_key_file: "{{ ssh_key_file }}"
 
 # Пароль нужен ровно для первого захода на новый VPS, где ключа ещё нет: ssh всё
-# равно сначала пробует ключ, пароль уходит только как fallback. Задавайте
-# vault_ssh_password в host_vars/<имя>/vault.yaml — у каждого сервера он свой.
+# равно сначала пробует ключ, пароль уходит только как fallback. Пусто, пока
+# vault_ssh_password не задан, — тогда бутстрап идёт по ключу из панели хостера.
 ansible_password: "{{ vault_ssh_password | default('') }}"
 
 # Кому открыт вход под root. Читаем публичную часть прямо из файла, чтобы
