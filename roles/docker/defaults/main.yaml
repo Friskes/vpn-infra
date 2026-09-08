@@ -6,10 +6,15 @@ docker_enabled: >-
      or (xui_enabled | default(false) | bool)
      or (rustdesk_enabled | default(false) | bool) }}
 
-docker_packages:
+# Движок и питоновская обвязка разделены: на сервере с уже поставленным Docker CE
+# ставить docker.io нельзя (он тянет свой containerd, конфликтующий с containerd.io),
+# а requests нужен всё равно.
+docker_engine_packages:
   - docker.io
-  # python3-requests нужен НА СЕРВЕРЕ: модули community.docker выполняются на целевом
-  # хосте и общаются с Docker API через requests (полный Docker SDK им уже не требуется).
+
+# python3-requests нужен НА СЕРВЕРЕ: модули community.docker выполняются на целевом
+# хосте и общаются с Docker API через requests (полный Docker SDK им уже не требуется).
+docker_python_packages:
   - python3-requests
 
 # Отбрасывать в DOCKER-USER всё, что контейнеры опубликовали, кроме списка ниже.
