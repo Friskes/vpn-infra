@@ -23,6 +23,16 @@
 - name: Развернуть WireGuard
   when: wireguard_enabled | bool
   block:
+    # wg-easy выполняет свои WG_POST_UP-правила внутри контейнера. На системах,
+    # где iptables работает через nft, legacy NAT-таблица не создаётся сама,
+    # пока не загружен модуль iptable_nat — контейнер уходит в restart loop с
+    # ошибкой «table nat does not exist».
+    - name: Загрузить модуль IPv4 NAT для WireGuard
+      community.general.modprobe:
+        name: iptable_nat
+        state: present
+        persistent: present
+
     - name: Создать каталог конфигурации wg-easy
       ansible.builtin.file:
         path: "{{ wireguard_config_dir }}"
