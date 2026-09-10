@@ -70,10 +70,13 @@ hosts: $(ANSIBLE)  ## Показать список серверов
 	@$(BIN)/ansible-inventory --list --yaml 2>/dev/null | \
 		grep -E "^\s{8}[a-z0-9-]+:|ansible_host:" | sed 's/^/  /'
 
-new-host: $(ANSIBLE)  ## Завести сервер: make new-host NAME=vpn1 IP=203.0.113.10
+# encrypt в конце обязателен: скрипт кладёт vault хоста открытым текстом из шаблона,
+# а незашифрованный vault роняет secrets-check — то есть блокирует любой коммит.
+new-host: $(ANSIBLE) $(VAULT_KEY)  ## Завести сервер: make new-host NAME=vpn1 IP=203.0.113.10
 	@test -n "$(NAME)" || { echo "Укажите имя: make new-host NAME=vpn1 IP=203.0.113.10"; exit 1; }
 	@test -n "$(IP)" || { echo "Укажите адрес: make new-host NAME=$(NAME) IP=203.0.113.10"; exit 1; }
 	@bash tools/new-host.sh "$(NAME)" "$(IP)" "$(if $(GROUP),$(GROUP),vpn)"
+	@$(MAKE) --no-print-directory encrypt
 
 # ── Секреты ─────────────────────────────────────────────────────────
 # Последний рубеж перед коммитом: расшифрованные секреты и личные данные

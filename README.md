@@ -105,10 +105,11 @@ make deploy                                 # развернуть
 
 Перед `make deploy` разложите на сервере публичный ключ — он печатается после
 `make init`, лежит в `keys/vpn-infra.pub`. Проще всего вставить его в панели
-хостера при создании VPS. Если сервер уже создан с root-паролем — впишите
-пароль в `host_vars/<имя>/vault.yaml` (поле `vault_ssh_password`), поставьте
-`sshpass` (`sudo apt install sshpass`), и Ansible зайдёт по паролю один раз, а
-дальше будет ходить по ключу.
+хостера при создании VPS. Если сервер уже создан с root-паролем — впишите его в
+vault этого сервера (`make decrypt`, поле `vault_ssh_password` в
+`host_vars/<имя>/vault.yaml`, затем `make encrypt`) и поставьте `sshpass`
+(`sudo apt install sshpass`). Ansible зайдёт по паролю один раз, дальше будет
+ходить по ключу.
 
 После развёртывания в `artifacts/<сервер>/CONNECTION_INFO.md` появится сводка:
 куда подключаться, какие порты, как войти в админки. Пароли админок —
