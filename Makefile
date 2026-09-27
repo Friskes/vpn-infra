@@ -18,7 +18,8 @@ LIMIT := $(if $(HOST),--limit $(HOST),)
 TAGSEL := $(if $(TAGS),--tags $(TAGS),)
 
 .PHONY: help init install hooks keygen secrets-check require-vault-key decrypt encrypt \
-        edit-secrets show-secrets vault ping syntax check deploy upgrade backup new-host hosts
+        edit-secrets show-secrets vault ping syntax check deploy upgrade backup new-host hosts \
+        ssh-key admin ssh
 
 help:  ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -32,10 +33,17 @@ help:  ## Показать список команд
 # Каждый шаг идемпотентен — уже готовое не трогается.
 init: install keygen $(INVENTORY) $(VAULT_MAIN)  ## Подготовить всё к первому запуску (одна команда)
 	@echo ""
-	@echo "Готово. Дальше:"
-	@echo "  1. Купите VPS (см. HOSTING.md) и разложите на нём ключ $(SSH_KEY).pub"
-	@echo "  2. make new-host NAME=vpn1 IP=<адрес сервера>"
-	@echo "  3. make ping && make deploy"
+	@echo "Готово. Ключ для панели хостера — вставьте его в поле SSH-ключа при заказе VPS:"
+	@echo ""
+	@cat $(SSH_KEY).pub
+	@echo ""
+	@command -v clip.exe >/dev/null && clip.exe < $(SSH_KEY).pub && \
+		echo "Ключ уже скопирован в буфер обмена Windows." && echo "" || true
+	@echo "Дальше (203.0.113.10 замените на адрес своего сервера):"
+	@echo "  1. python3 tools/measure/ru-reach.py 203.0.113.10"
+	@echo "  2. make new-host NAME=vpn1 IP=203.0.113.10   (ключ не вставили — ещё make ssh-key)"
+	@echo "  3. make deploy"
+	@echo "  4. make admin — адреса и пароли админок"
 
 # Переустановка запускается, только когда менялись requirements.*
 $(ANSIBLE): requirements.txt requirements.yaml
@@ -55,10 +63,7 @@ $(SSH_KEY):
 	@mkdir -p keys
 	@ssh-keygen -t ed25519 -N "" -C "vpn-infra" -f $(SSH_KEY) >/dev/null
 	@chmod 600 $(SSH_KEY)
-	@echo "Создан ssh-ключ $(SSH_KEY). Публичную часть разложите на серверах:"
-	@echo ""
-	@cat $(SSH_KEY).pub
-	@echo ""
+	@echo "Создан ssh-ключ $(SSH_KEY), публичная часть — $(SSH_KEY).pub."
 
 keygen: $(SSH_KEY)  ## Создать ssh-ключ для доступа к серверам
 
@@ -66,12 +71,19 @@ $(INVENTORY):
 	@cp $(INVENTORY).example $(INVENTORY)
 	@echo "Создан $(INVENTORY). Серверы добавляйте командой make new-host."
 
+ssh-key: $(ANSIBLE) $(SSH_KEY)  ## Положить ssh-ключ на сервер по root-паролю, если не вставили при заказе
+	@bash tools/access.sh key "$(HOST)"
+
+admin: $(ANSIBLE) require-vault-key  ## Открыть админки wg-easy и 3x-ui и показать адреса и пароли
+	@bash tools/access.sh admin "$(HOST)"
+
+ssh: $(ANSIBLE)  ## Открыть консоль сервера
+	@bash tools/access.sh shell "$(HOST)"
+
 hosts: $(ANSIBLE)  ## Показать список серверов
 	@$(BIN)/ansible-inventory --list --yaml 2>/dev/null | \
 		grep -E "^\s{8}[a-z0-9-]+:|ansible_host:" | sed 's/^/  /'
 
-# encrypt в конце обязателен: скрипт кладёт vault хоста открытым текстом из шаблона,
-# а незашифрованный vault роняет secrets-check — то есть блокирует любой коммит.
 new-host: $(ANSIBLE) $(VAULT_KEY)  ## Завести сервер: make new-host NAME=vpn1 IP=203.0.113.10
 	@test -n "$(NAME)" || { echo "Укажите имя: make new-host NAME=vpn1 IP=203.0.113.10"; exit 1; }
 	@test -n "$(IP)" || { echo "Укажите адрес: make new-host NAME=$(NAME) IP=203.0.113.10"; exit 1; }
@@ -81,11 +93,11 @@ new-host: $(ANSIBLE) $(VAULT_KEY)  ## Завести сервер: make new-host
 # ── Секреты ─────────────────────────────────────────────────────────
 # Последний рубеж перед коммитом: расшифрованные секреты и личные данные
 # в публичном репозитории оказаться не должны.
-secrets-check:  ## Проверить, что секреты зашифрованы и не отслеживаются git
+secrets-check:  ## Проверить, что секреты не отслеживаются git в открытом виде
 	@fail=0; \
 	for f in $(VAULT_FILES); do \
-		if ! head -1 $$f | grep -q '^$$ANSIBLE_VAULT'; then \
-			echo "ОШИБКА: $$f не зашифрован — выполните make encrypt"; fail=1; \
+		if ! head -1 $$f | grep -q '^$$ANSIBLE_VAULT' && git ls-files --error-unmatch $$f >/dev/null 2>&1; then \
+			echo "ОШИБКА: $$f отслеживается git и не зашифрован — make encrypt и git rm --cached $$f"; fail=1; \
 		fi; \
 	done; \
 	for f in $(VAULT_KEY) $(VAULT_MAIN) $(INVENTORY) $(SSH_KEY) $(SSH_KEY).pub; do \

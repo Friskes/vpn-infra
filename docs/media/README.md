@@ -11,10 +11,10 @@
 
 | Файл | Что на нём | Куда встанет |
 |---|---|---|
-| `hero.gif` | `make deploy` от запуска до финальной сводки, ускоренно, 10–20 с | [README.md](../../README.md), под заголовком |
+| `hero.gif` | `make deploy` от запуска до `make admin`, ускоренно, 10–20 с | [README.md](../../README.md), под заголовком |
 | `wg-easy-client.png` | админка wg-easy: созданный клиент, кнопки скачивания конфига и QR | [CLIENTS.md](../../CLIENTS.md#откуда-брать-конфиг) |
 | `xui-inbound.png` | панель 3x-ui: готовый вход `reality-443`, кнопка выдачи ссылки | [CLIENTS.md](../../CLIENTS.md#откуда-брать-конфиг) |
-| `connection-info.png` | файл `artifacts/<сервер>/CONNECTION_INFO.md` открытым | [README.md](../../README.md#быстрый-старт) |
+| `make-admin.png` | вывод `make admin`: адреса админок, пароли замазать | [README.md](../../README.md#5-подключиться) |
 | `split-tunneling.png` | окно vpn-configurator с загруженным конфигом | [CLIENTS.md](../../CLIENTS.md#раздельное-туннелирование) |
 | `slipnet-profile.png` | SlipNet: импортированный профиль и поле DNS Resolver | [TUNNEL.md](../../TUNNEL.md#коротко-как-найти-свой-резолвер-за-10-минут) |
 | `resolver-scan.png` | SlipNet: экран Scan for Working Resolvers с результатами | [TUNNEL.md](../../TUNNEL.md#коротко-как-найти-свой-резолвер-за-10-минут) |

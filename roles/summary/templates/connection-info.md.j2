@@ -10,12 +10,10 @@
 - Админка: http://{{ server_ip }}:{{ wireguard_admin_port }} — открыта в интернет, закрыть: `admin_public: false` (SERVER.md)
 {% else %}
 - Админка: только через SSH-проброс, снаружи и из самого VPN её нет.
-  Команду запускайте на локальном компьютере из каталога проекта (`vpn-infra`),
-  не внутри SSH-сессии на сервере.
-  ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }} root@{{ server_ip }}
-  и открыть http://127.0.0.1:{{ wireguard_admin_port }}
+  На своём компьютере в каталоге проекта: `make admin HOST={{ inventory_hostname }}` —
+  напечатает адрес и пароль и откроет доступ, пока окно открыто.
 {% endif %}
-- Вход: только пароль (тот, что вы задали в vault)
+- Вход: только пароль (`make admin` или `make show-secrets`)
 - VPN-порт: {{ wireguard_vpn_port }}/udp
 - Клиентское приложение: см. CLIENTS.md репозитория
 - Дальше: в админке создайте клиента, скачайте конфиг или отсканируйте QR в приложении.
@@ -35,7 +33,8 @@
 - Домен туннеля: `{{ slipstream_domain }}`
 - Приложение: SlipNet — https://github.com/anonvector/SlipNet/releases
 
-**Доступ выдаётся командой на сервере**, вручную ничего заполнять не нужно:
+**Доступ выдаётся командой на сервере** (`make ssh HOST={{ inventory_hostname }}`),
+вручную ничего заполнять не нужно:
 
 ```bash
 slipnet-user add <имя>          # завести пользователя и получить ссылку
@@ -76,17 +75,16 @@ slipnet-user del <имя>          # отозвать доступ
 {% if not xui_enabled | default(false) | bool %}
 На этом сервере выключен (`xui_enabled: false`).
 {% else %}
-- Вход клиентов: `{{ server_ip }}:{{ xui_public_port }}`, VLESS + Reality
+- Вход клиентов: `{{ wireguard_host }}:{{ xui_public_port }}`, VLESS + Reality — в клиенте
+  адресом ставить имя, а не IP: при переезде хватит сменить A-запись
 {% if admin_public | bool %}
 - Админка: http://{{ server_ip }}:{{ xui_admin_port }}{{ xui_effective_path | default('/<путь>/') }} — открыта в интернет
 {% else %}
-- Админка: только через SSH-проброс, снаружи и из VPN её нет.
-  Команду запускайте на локальном компьютере из каталога проекта (`vpn-infra`),
-  не внутри SSH-сессии на сервере.
-  ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
-  и открыть http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path | default('/<путь>/') }}
+- Админка: только через SSH-проброс, снаружи и из VPN её нет — `make admin HOST={{ inventory_hostname }}`
+  печатает адрес с путём, логин и пароль.
 {% endif %}
-- Профиль клиента: в панели у входа кнопка выдачи ссылки `vless://` и QR-кода
+- Вход клиентов заводится в панели один раз — PROXY.md, раздел «Завести вход»
+- Профиль клиента: в панели «Клиенты» → иконка «QR-код» — ссылка `vless://` и QR
 - Против белых списков оператора не поможет — там фильтр смотрит на адрес назначения
 {% endif %}
 
@@ -94,14 +92,15 @@ slipnet-user del <имя>          # отозвать доступ
 {% if not rustdesk_enabled %}
 На этом сервере выключен (`rustdesk_enabled: false`).
 {% else %}
-- ID-сервер (hbbs): `{{ server_ip }}:{{ rustdesk_id_port }}`
-- Relay-сервер (hbbr): `{{ server_ip }}:{{ rustdesk_relay_port }}`
+- ID-сервер (hbbs): `{{ wireguard_host }}:{{ rustdesk_id_port }}` — имя, а не IP: при переезде
+  хватит сменить A-запись, ключ переносится из бэкапа
+- Relay-сервер (hbbr): `{{ rustdesk_relay_servers }}`
 - Public Key:
   ```
   {{ rustdesk_public_key }}
   ```
 - Файл ключа: `{{ artifacts_dir }}/{{ inventory_hostname }}/id_ed25519.pub`
-- В клиенте RustDesk: Настройки → Сеть → ID/Relay server → впишите IP и Key.
+- В клиенте RustDesk: Настройки → Сеть → ID/Relay server → впишите имя ID-сервера и Key.
 {% endif %}
 
 ## fail2ban

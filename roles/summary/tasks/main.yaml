@@ -43,11 +43,7 @@
       http://{{ server_ip }}:{{ xui_admin_port }}{{ xui_effective_path | default('/<путь>/') }}
       {% endif %}
       {% else %}
-      Админки только через проброс:
-      ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes
-      -L {{ wireguard_admin_port }}:127.0.0.1:{{ wireguard_admin_port }}
-      {{ '-L ' ~ xui_admin_port ~ ':127.0.0.1:' ~ xui_admin_port if xui_enabled | default(false) | bool else '' }}
-      root@{{ server_ip }}
+      Админки: make admin HOST={{ inventory_hostname }} — адреса, пароли и доступ, пока окно открыто.
       {% endif %}
       {{ 'ВНИМАНИЕ: серверу нужна перезагрузка (обновилось ядро или системные библиотеки) — сделайте её вручную.'
          if summary_reboot_required.stat.exists else '' }}

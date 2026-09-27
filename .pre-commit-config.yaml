@@ -13,7 +13,7 @@ repos:
   - repo: local
     hooks:
       - id: secrets-check
-        name: Проверка, что секреты зашифрованы Ansible Vault
+        name: Проверка, что секреты не попали под git в открытом виде
         entry: make secrets-check
         language: system
         pass_filenames: false

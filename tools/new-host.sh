@@ -65,11 +65,8 @@ cat <<EOF
 сервер добавлен в inventory/hosts.yaml.
 
 Дальше:
-  1. Разложите публичный ключ keys/vpn-infra.pub в панели хостера при создании VPS.
-     Если сервер уже создан с root-паролем — впишите его в vault этого сервера:
-     make decrypt, поле vault_ssh_password в host_vars/$NAME/vault.yaml, make encrypt.
-  2. make ping HOST=$NAME     — проверить связь
-  3. make deploy HOST=$NAME   — развернуть
+  1. Ключ keys/vpn-infra.pub не вставили при заказе VPS — make ssh-key HOST=$NAME
+  2. make deploy HOST=$NAME   — развернуть
 
 Нужны DNS-туннели, RustDesk или другой набор сервисов на этом сервере —
 раскомментируйте нужное в host_vars/$NAME/vars.yaml.
