@@ -143,6 +143,29 @@
         group: root
         mode: "0644"
 
+    - name: Проверить, что ключи для восстановления на месте
+      ansible.builtin.assert:
+        that: (dnstt_restore_src ~ '/' ~ item) is file
+        fail_msg: "Нет {{ dnstt_restore_src }}/{{ item }} — сначала make backup старого сервера."
+        quiet: true
+      loop: [dnstt-server.key, dnstt-server.pub]
+      when: dnstt_restore_src | length > 0
+
+    - name: Восстановить ключи из бэкапа
+      ansible.builtin.copy:
+        src: "{{ dnstt_restore_src }}/{{ item.name }}"
+        dest: "{{ item.dest }}"
+        owner: "{{ dnstt_user }}"
+        group: "{{ dnstt_user }}"
+        mode: "{{ item.mode }}"
+        force: false
+      loop:
+        - {name: dnstt-server.key, dest: "{{ dnstt_privkey }}", mode: "0400"}
+        - {name: dnstt-server.pub, dest: "{{ dnstt_pubkey }}", mode: "0444"}
+      when:
+        - dnstt_restore_src | length > 0
+        - not ansible_check_mode
+
     # Ключи создаются один раз: перегенерация обнулит все выданные профили,
     # потому что клиент проверяет сервер именно по этому публичному ключу.
     - name: Проверить, есть ли ключи

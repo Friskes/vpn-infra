@@ -64,6 +64,31 @@
         - "{{ slipstream_conf_dir }}"
         - "{{ proxy_conf_dir }}"
 
+    - name: Проверить, что бэкап для восстановления на месте
+      ansible.builtin.assert:
+        that: (slipstream_restore_src ~ '/' ~ item) is file
+        fail_msg: "Нет {{ slipstream_restore_src }}/{{ item }} — сначала make backup старого сервера."
+        quiet: true
+      loop: [slipnet-users.json, slipstream-reset-seed]
+      when: slipstream_restore_src | length > 0
+
+    - name: Восстановить учётки и seed из бэкапа
+      ansible.builtin.copy:
+        src: "{{ slipstream_restore_src }}/{{ item.name }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+      loop:
+        - name: slipnet-users.json
+          dest: "{{ slipnet_users_file }}"
+        - name: slipstream-reset-seed
+          dest: "{{ slipstream_reset_seed }}"
+      when:
+        - slipstream_restore_src | length > 0
+        - not ansible_check_mode
+
     # ── SOCKS5 с раздельными учётками ───────────────────────────────────────
     # Без пароля туннелем мог пользоваться любой, кто узнал домен: он виден
     # и оператору, и в логах каждого резолвера по пути.

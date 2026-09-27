@@ -75,5 +75,6 @@ xui_admin_password: "{{ vault_xui_admin_password | default('') }}"
 
 admin_public: false
 
-# Явный relay для RustDesk: адрес того сервера, на который идёт развёртывание.
-rustdesk_relay_servers: "{{ server_ip }}:{{ rustdesk_relay_port }}"
+# Явный relay для RustDesk — по тому же имени, что и WireGuard (без домена это IP сервера):
+# при переезде клиенты идут на новый адрес вслед за A-записью.
+rustdesk_relay_servers: "{{ wireguard_host }}:{{ rustdesk_relay_port }}"

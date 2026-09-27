@@ -35,6 +35,61 @@
         path: /var/run/docker.sock
       register: xui_docker_socket
 
+    - name: Проверить, что бэкап панели на месте
+      ansible.builtin.assert:
+        that: (xui_restore_src ~ '/' ~ item) is file
+        fail_msg: "Нет {{ xui_restore_src }}/{{ item }} — сначала make backup старого сервера."
+        quiet: true
+      loop: [x-ui.db, xui-base-path]
+      when: xui_restore_src | length > 0
+
+    - name: Узнать, восстанавливалась ли уже база панели
+      ansible.builtin.stat:
+        path: "{{ xui_config_dir }}/.restored"
+      register: xui_restored
+      when: xui_restore_src | length > 0
+
+    - name: Восстановить базу и путь панели из бэкапа
+      when:
+        - xui_restore_src | length > 0
+        - not xui_restored.stat.exists
+        - not ansible_check_mode
+      block:
+        - name: Остановить панель на время подмены базы
+          ansible.builtin.command: docker stop {{ xui_container_name }}
+          register: xui_stop
+          changed_when: xui_stop.rc == 0
+          failed_when: false
+
+        # Журнал WAL от прежней базы sqlite применил бы поверх новой и испортил её.
+        - name: Убрать журналы и отпечаток прежней базы
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ xui_config_dir }}/db/x-ui.db-wal"
+            - "{{ xui_config_dir }}/db/x-ui.db-shm"
+            - "{{ xui_config_dir }}/.settings-fingerprint"
+
+        - name: Положить базу и путь панели из бэкапа
+          ansible.builtin.copy:
+            src: "{{ xui_restore_src }}/{{ item.src }}"
+            dest: "{{ item.dest }}"
+            owner: root
+            group: root
+            mode: "0600"
+          loop:
+            - {src: x-ui.db, dest: "{{ xui_config_dir }}/db/x-ui.db"}
+            - {src: xui-base-path, dest: "{{ xui_config_dir }}/.base-path"}
+
+        - name: Отметить, что база восстановлена
+          ansible.builtin.copy:
+            content: "{{ xui_restore_src }}\n"
+            dest: "{{ xui_config_dir }}/.restored"
+            owner: root
+            group: root
+            mode: "0600"
+
     # Путь админки создаётся один раз и потом только читается: смена пути
     # каждый прогон ломала бы закладку и ссылку, по которой заходят.
     - name: Прочитать сохранённый путь админки
@@ -181,12 +236,10 @@
           {% if admin_public | bool %}
           Адрес: http://{{ server_ip }}:{{ xui_admin_port }}{{ xui_effective_path }}
           {% else %}
-          Снаружи её нет: пробросьте порт —
-          ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes
-          -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
-          и откройте http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path }}
+          Снаружи её нет: make admin HOST={{ inventory_hostname }} на своём компьютере
+          напечатает адрес, логин и пароль.
           {% endif %}
-          Дальше заведите вход VLESS + Reality на порт {{ xui_public_port }}.
+          Дальше заведите вход VLESS + Reality на порт {{ xui_public_port }} — PROXY.md, «Завести вход».
 
 - name: Остановить панель, если она выключена
   community.docker.docker_container:

@@ -8,7 +8,8 @@
   ansible.builtin.set_fact:
     backup_targets: >-
       {{ [backup_wireguard_name, backup_slipnet_name, backup_reset_seed_name,
-          backup_dnstt_name, backup_xui_name]
+          backup_dnstt_name, backup_dnstt_pub_name, backup_xui_name, backup_xui_path_name,
+          backup_rustdesk_key_name, backup_rustdesk_pub_name]
          | map('regex_replace', '^', artifacts_dir ~ '/' ~ inventory_hostname ~ '/')
          | list }}
 
@@ -122,6 +123,15 @@
   register: backup_dnstt_fetch
   when: dnstt_domain | default('') | length > 0
 
+- name: Скачать публичный ключ dnstt
+  ansible.builtin.fetch:
+    src: "{{ dnstt_pubkey }}"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_dnstt_pub_name }}"
+    flat: true
+    fail_on_missing: false
+  register: backup_dnstt_pub_fetch
+  when: dnstt_domain | default('') | length > 0
+
 # База панели Xray: в ней клиенты Reality с их UUID и настройки входов.
 - name: Скачать базу панели Xray
   ansible.builtin.fetch:
@@ -132,16 +142,41 @@
   register: backup_xui_fetch
   when: xui_enabled | default(false) | bool
 
+- name: Скачать путь панели Xray
+  ansible.builtin.fetch:
+    src: "{{ xui_config_dir }}/.base-path"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_xui_path_name }}"
+    flat: true
+    fail_on_missing: false
+  register: backup_xui_path_fetch
+  when: xui_enabled | default(false) | bool
+
+- name: Скачать ключи RustDesk
+  ansible.builtin.fetch:
+    src: "{{ rustdesk_data_dir }}/{{ item.src }}"
+    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ item.dest }}"
+    flat: true
+    fail_on_missing: false
+  loop:
+    - {src: id_ed25519, dest: "{{ backup_rustdesk_key_name }}"}
+    - {src: id_ed25519.pub, dest: "{{ backup_rustdesk_pub_name }}"}
+  register: backup_rustdesk_fetch
+  when: rustdesk_enabled | default(false) | bool
+
 - name: Собрать список того, что реально скачалось
   ansible.builtin.set_fact:
     backup_local_files: >-
-      {{ ([artifacts_dir ~ '/' ~ inventory_hostname ~ '/' ~ backup_wireguard_name]
-            if backup_wireguard_state.stat.exists and backup_archive_ok | default(false) | bool
-            else [])
-         + [backup_slipnet_fetch.dest | default(''),
-            backup_seed_fetch.dest | default(''),
-            backup_dnstt_fetch.dest | default(''),
-            backup_xui_fetch.dest | default('')] | select | list }}
+      {{ (([artifacts_dir ~ '/' ~ inventory_hostname ~ '/' ~ backup_wireguard_name]
+             if backup_wireguard_state.stat.exists and backup_archive_ok | default(false) | bool
+             else [])
+          + [backup_slipnet_fetch.dest | default(''),
+             backup_seed_fetch.dest | default(''),
+             backup_dnstt_fetch.dest | default(''),
+             backup_dnstt_pub_fetch.dest | default(''),
+             backup_xui_fetch.dest | default(''),
+             backup_xui_path_fetch.dest | default('')]
+          + (backup_rustdesk_fetch.results | default([]) | map(attribute='dest', default='') | list))
+         | select | list }}
 
 # Прошлые снимки шифруем заодно: копия делается до скачивания, и если в тот момент
 # файл ещё лежал открытым (первый прогон после включения шифрования), .prev так и
@@ -204,4 +239,6 @@
       Восстановление wg-easy на новом сервере: сначала ansible-vault decrypt нужного файла,
       затем make deploy HOST=<новый>
       ARGS="-e wireguard_restore_src={{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_wireguard_name }}".
-      Ссылки slipnet:// и профили dnstt придётся выпустить заново: в них зашит домен старого сервера.
+      Остальное — так же, каталогом бэкапа: -e slipstream_restore_src=, dnstt_restore_src=, xui_restore_src=,
+      rustdesk_restore_src={{ artifacts_dir }}/{{ inventory_hostname }} — ссылки, профили, клиенты Reality
+      и ключ RustDesk останутся прежними (туннели — если домен тот же). Порядок — SERVER.md.

@@ -1,8 +1,7 @@
 ---
 # not ansible_check_mode: в сухом прогоне на свежем сервере контейнера ещё нет.
+# Не docker_container с restart: модуль без полного набора параметров пересоздаёт контейнер без портов.
 - name: Restart 3x-ui
-  community.docker.docker_container:
-    name: "{{ xui_container_name }}"
-    state: started
-    restart: true
+  ansible.builtin.command: docker restart {{ xui_container_name }}
+  changed_when: true
   when: not ansible_check_mode

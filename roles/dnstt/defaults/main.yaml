@@ -29,6 +29,10 @@ dnstt_conf_dir: /etc/dnstt
 dnstt_privkey: "{{ dnstt_conf_dir }}/server.key"
 dnstt_pubkey: "{{ dnstt_conf_dir }}/server.pub"
 
+# Переезд с тем же доменом: каталог бэкапа старого сервера, откуда берётся пара ключей,
+# чтобы выданные профили продолжили работать (по образцу slipstream_restore_src).
+dnstt_restore_src: ""
+
 # Туннель заканчивается на том же SOCKS5 с паролем, что и Slipstream: доступ
 # выдаётся одними и теми же учётками, отзывается тоже одной командой.
 dnstt_upstream: "{{ proxy_host | default('127.0.0.1') }}:{{ proxy_port | default(1081) }}"

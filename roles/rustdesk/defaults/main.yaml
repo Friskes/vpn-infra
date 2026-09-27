@@ -16,4 +16,7 @@ rustdesk_relay_port: 21117
 rustdesk_nat_test_port: 21115
 
 # rustdesk_relay_servers задаётся в group_vars/all/vars.yaml.
+# Переезд: каталог бэкапа старого сервера с парой ключей hbbs — клиентам не придётся
+# вписывать новый Key. Разово: ARGS="-e rustdesk_restore_src=artifacts/<старый>".
+rustdesk_restore_src: ""
 rustdesk_relay_servers: ""

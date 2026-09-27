@@ -14,6 +14,30 @@
         state: directory
         mode: "0750"
 
+    - name: Проверить, что ключ для восстановления на месте
+      ansible.builtin.assert:
+        that: (rustdesk_restore_src ~ '/' ~ item) is file
+        fail_msg: "Нет {{ rustdesk_restore_src }}/{{ item }} — сначала make backup старого сервера."
+        quiet: true
+      loop: [rustdesk-id_ed25519, rustdesk-id_ed25519.pub]
+      when: rustdesk_restore_src | length > 0
+
+    # До первого старта hbbs: иначе он сгенерирует свой ключ, и клиентам пришлось бы вписывать новый.
+    - name: Восстановить ключ сервера из бэкапа
+      ansible.builtin.copy:
+        src: "{{ rustdesk_restore_src }}/rustdesk-{{ item.name }}"
+        dest: "{{ rustdesk_data_dir }}/{{ item.name }}"
+        mode: "{{ item.mode }}"
+        force: false
+      loop:
+        - {name: id_ed25519, mode: "0600"}
+        - {name: id_ed25519.pub, mode: "0644"}
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - rustdesk_restore_src | length > 0
+        - not ansible_check_mode
+
     # Образ тянем ДО пересоздания контейнеров: docker_container сначала удаляет старый
     # и только потом создаёт новый, и скачивание внутри этого окна растягивало бы простой
     # на время ответа реестра (а при недоступном реестре оставляло бы сервис лежать).
