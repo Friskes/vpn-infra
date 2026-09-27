@@ -19,9 +19,6 @@ ssh_absent_users:
 # loopback-админки; всё прочее закрыто. true снимает и это ограничение.
 ssh_allow_tcp_forwarding: false
 
-# Порты на loopback, куда разрешён -L. Наружу админки не смотрят вовсе, и это
-# единственный путь к ним, поэтому список ровно по включённым сервисам:
-# лишний порт здесь — лишняя дверь внутрь.
 ssh_permit_open: >-
   {{ ([wireguard_admin_port] if wireguard_enabled | default(true) | bool else [])
      + ([xui_admin_port] if xui_enabled | default(false) | bool else []) }}

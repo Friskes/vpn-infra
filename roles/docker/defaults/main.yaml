@@ -30,4 +30,6 @@ docker_guard_wan_interface: "{{ ansible_default_ipv4.interface | default('eth0')
 # сделать не в состоянии, потому что публикации докера идут мимо INPUT.
 docker_guard_public_ports: >-
   {{ ([wireguard_vpn_port ~ '/udp'] if wireguard_enabled | default(true) | bool else [])
-     + ([xui_public_port ~ '/tcp'] if xui_enabled | default(false) | bool else []) }}
+     + ([xui_public_port ~ '/tcp'] if xui_enabled | default(false) | bool else [])
+     + ([wireguard_admin_port ~ '/tcp'] if wireguard_enabled | default(true) | bool and admin_public | bool else [])
+     + ([xui_admin_port ~ '/tcp'] if xui_enabled | default(false) | bool and admin_public | bool else []) }}

@@ -107,8 +107,8 @@ Windows, macOS, Linux, Android, iOS, тот же набор протоколов
 | DNS-туннель | на сервере: `slipnet-user add <имя>` печатает ссылку `slipnet://` |
 | RustDesk | адрес сервера и Public Key — в `artifacts/<сервер>/CONNECTION_INFO.md` |
 
-Обе админки — wg-easy и 3x-ui — снаружи закрыты намеренно. Как в них попасть
-через SSH-проброс, описано в [SERVER.md](SERVER.md#доступ-к-админкам).
+Обе админки — wg-easy и 3x-ui — по умолчанию снаружи закрыты. Как в них попасть
+через SSH-проброс или открыть их в интернет, описано в [SERVER.md](SERVER.md#доступ-к-админкам).
 
 <!-- media: wg-easy-client.png — скриншот админки wg-easy с созданным клиентом и QR -->
 <!-- media: xui-inbound.png — скриншот панели 3x-ui с готовым инбаундом reality-443 -->

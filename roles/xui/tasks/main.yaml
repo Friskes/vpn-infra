@@ -105,7 +105,6 @@
           - "{{ xui_config_dir }}/db:/etc/x-ui"
           - "{{ xui_config_dir }}/cert:/root/cert"
         ports:
-          # Вход для клиентов и админка на loopback — больше наружу ничего.
           - "{{ xui_public_port }}:{{ xui_public_port }}/tcp"
           - "{{ xui_admin_publish }}"
         default_host_ip: ""
@@ -178,10 +177,15 @@
     - name: Подсказать, как войти в панель
       ansible.builtin.debug:
         msg: >-
-          Панель Xray поднята. Снаружи её нет: пробросьте порт —
+          Панель Xray поднята.
+          {% if admin_public | bool %}
+          Адрес: http://{{ server_ip }}:{{ xui_admin_port }}{{ xui_effective_path }}
+          {% else %}
+          Снаружи её нет: пробросьте порт —
           ssh -i {{ ansible_ssh_private_key_file }} -o IdentitiesOnly=yes
           -L {{ xui_admin_port }}:127.0.0.1:{{ xui_admin_port }} root@{{ server_ip }}
           и откройте http://127.0.0.1:{{ xui_admin_port }}{{ xui_effective_path }}
+          {% endif %}
           Дальше заведите вход VLESS + Reality на порт {{ xui_public_port }}.
 
 - name: Остановить панель, если она выключена

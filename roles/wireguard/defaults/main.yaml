@@ -26,9 +26,8 @@ wireguard_host: "{{ server_ip }}"
 # на руках это лечили каждый раз заново — проще выдавать конфиги уже готовыми.
 wireguard_persistent_keepalive: 25
 
-# Админка публикуется только на loopback: снаружи её нет, вход — через SSH-проброс.
-# Открыть наружу (не надо): "{{ wireguard_admin_port }}:{{ wireguard_admin_port }}/tcp"
-wireguard_admin_publish: "127.0.0.1:{{ wireguard_admin_port }}:{{ wireguard_admin_port }}/tcp"
+wireguard_admin_publish: >-
+  {{ '' if admin_public | bool else '127.0.0.1:' }}{{ wireguard_admin_port }}:{{ wireguard_admin_port }}/tcp
 
 # Правила, которые wg-easy ставит при поднятии интерфейса. Первые четыре — его
 # собственные, дальше наши запреты; кастомный WG_POST_UP заменяет дефолтный

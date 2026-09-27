@@ -113,7 +113,8 @@ vault этого сервера (`make decrypt`, поле `vault_ssh_password` �
 
 После развёртывания в `artifacts/<сервер>/CONNECTION_INFO.md` появится сводка:
 куда подключаться, какие порты, как войти в админки. Пароли админок —
-`make show-secrets`.
+`make show-secrets`. Сами админки по умолчанию доступны только через SSH-проброс. Открыть
+их в интернет можно одной строкой, но с рисками — см. [SERVER.md](SERVER.md#доступ-к-админкам).
 
 <!-- media: connection-info.png — скриншот artifacts/vpn1/CONNECTION_INFO.md -->
 

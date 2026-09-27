@@ -73,5 +73,7 @@ ssh_disable_password: true
 wireguard_admin_password: "{{ vault_wireguard_admin_password | default('') }}"
 xui_admin_password: "{{ vault_xui_admin_password | default('') }}"
 
+admin_public: false
+
 # Явный relay для RustDesk: адрес того сервера, на который идёт развёртывание.
 rustdesk_relay_servers: "{{ server_ip }}:{{ rustdesk_relay_port }}"
