@@ -28,17 +28,17 @@ for ipt in iptables ip6tables; do
     # -w: скрипт стартует сразу после докера, который в этот момент правит те же
     # таблицы. Без ожидания блокировки команда падает, set -e обрывает скрипт —
     # и цепочка остаётся без запрета, то есть отказ происходит в сторону «открыто».
+    # Одна транзакция: при поштучных -D/-I между запретом и разрешениями WireGuard терял пакеты.
+    {
+    printf '%s\n' "*filter"
 
     # Снимаем ВСЕ прежние свои правила — по метке, а не по нынешнему списку портов.
     # Иначе правило, убранное из списка (скажем, отключили сервис), останется висеть
     # в цепочке навсегда: удалять его будет уже нечему.
-    # Идём с конца, чтобы номера ещё не удалённых строк не съезжали.
-    for num in $("$ipt" -L "$CHAIN" -n --line-numbers | grep "$MARK" | awk '{print $1}' | sort -rn); do
-        "$ipt" -w 5 -D "$CHAIN" "$num"
-    done
+    "${ipt}-save" -t filter | grep -F -- "-A $CHAIN " | grep -F -- "\"$MARK\"" | sed 's/^-A /-D /'
 
     # Сначала запрет — он окажется последним из наших.
-    "$ipt" -w 5 -I "$CHAIN" 1 -i "$WAN" -m comment --comment "$MARK" -j DROP
+    printf '%s\n' "-I $CHAIN 1 -i $WAN -m comment --comment \"$MARK\" -j DROP"
 
     # Затем порты, которые контейнерам публиковать наружу действительно можно.
     # Протокол указан явно: открывать 443/udp и 51820/tcp «на всякий случай» —
@@ -46,11 +46,12 @@ for ipt in iptables ip6tables; do
     for entry in {{ docker_guard_public_ports | join(' ') }}; do
         port="${entry%%/*}"
         proto="${entry##*/}"
-        "$ipt" -w 5 -I "$CHAIN" 1 -i "$WAN" -p "$proto" --dport "$port" \
-            -m comment --comment "$MARK" -j RETURN
+        printf '%s\n' "-I $CHAIN 1 -i $WAN -p $proto -m $proto --dport $port -m comment --comment \"$MARK\" -j RETURN"
     done
 
     # И первым — ответы на соединения, начатые изнутри.
-    "$ipt" -w 5 -I "$CHAIN" 1 -i "$WAN" -m conntrack --ctstate RELATED,ESTABLISHED \
-        -m comment --comment "$MARK" -j RETURN
+    printf '%s\n' "-I $CHAIN 1 -i $WAN -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment \"$MARK\" -j RETURN"
+
+    printf '%s\n' "COMMIT"
+    } | "${ipt}-restore" -w 5 --noflush
 done
