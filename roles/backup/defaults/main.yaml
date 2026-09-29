@@ -12,6 +12,7 @@ backup_dnstt_name: dnstt-server.key
 backup_dnstt_pub_name: dnstt-server.pub
 backup_xui_name: x-ui.db
 backup_xui_path_name: xui-base-path
+backup_awg_name: awg-easy.db
 backup_rustdesk_key_name: rustdesk-id_ed25519
 backup_rustdesk_pub_name: rustdesk-id_ed25519.pub
 backup_reset_seed_name: slipstream-reset-seed

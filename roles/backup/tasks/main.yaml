@@ -9,7 +9,7 @@
     backup_targets: >-
       {{ [backup_wireguard_name, backup_slipnet_name, backup_reset_seed_name,
           backup_dnstt_name, backup_dnstt_pub_name, backup_xui_name, backup_xui_path_name,
-          backup_rustdesk_key_name, backup_rustdesk_pub_name]
+          backup_awg_name, backup_rustdesk_key_name, backup_rustdesk_pub_name]
          | map('regex_replace', '^', artifacts_dir ~ '/' ~ inventory_hostname ~ '/')
          | list }}
 
@@ -132,15 +132,59 @@
   register: backup_dnstt_pub_fetch
   when: dnstt_domain | default('') | length > 0
 
-# База панели Xray: в ней клиенты Reality с их UUID и настройки входов.
-- name: Скачать базу панели Xray
-  ansible.builtin.fetch:
-    src: "{{ xui_config_dir }}/db/x-ui.db"
-    dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_xui_name }}"
-    flat: true
-    fail_on_missing: false
-  register: backup_xui_fetch
-  when: xui_enabled | default(false) | bool
+# Снимок через backup API, а не копия файла: свежие правки панели держат в WAL, в самом .db их может не быть.
+- name: Перечислить базы панелей
+  ansible.builtin.set_fact:
+    backup_sqlite_dbs: >-
+      {{ ([{'src': xui_config_dir ~ '/db/x-ui.db', 'name': backup_xui_name}]
+          if xui_enabled | default(false) | bool else [])
+         + ([{'src': awg_config_dir ~ '/wg-easy.db', 'name': backup_awg_name}]
+            if awg_enabled | default(false) | bool else []) }}
+
+- name: Проверить, есть ли базы панелей
+  ansible.builtin.stat:
+    path: "{{ item.src }}"
+  loop: "{{ backup_sqlite_dbs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: backup_sqlite_stat
+
+- name: Снять базы панелей
+  when: not ansible_check_mode
+  block:
+    - name: Снять согласованные снимки баз панелей
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - >-
+            import os, sqlite3, sys; os.umask(0o077);
+            src = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True);
+            dst = sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()
+          - "{{ item.stat.path }}"
+          - "/root/{{ item.item.name }}.snapshot"
+      loop: "{{ backup_sqlite_stat.results | selectattr('stat.exists') | list }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      changed_when: true
+
+    - name: Скачать снимки баз панелей на локальный ПК
+      ansible.builtin.fetch:
+        src: "/root/{{ item.item.name }}.snapshot"
+        dest: "{{ artifacts_dir }}/{{ inventory_hostname }}/{{ item.item.name }}"
+        flat: true
+      loop: "{{ backup_sqlite_stat.results | selectattr('stat.exists') | list }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      register: backup_sqlite_fetch
+  always:
+    - name: Убрать снимки баз с сервера
+      ansible.builtin.file:
+        path: "/root/{{ item.name }}.snapshot"
+        state: absent
+      loop: "{{ backup_sqlite_dbs }}"
+      loop_control:
+        label: "{{ item.name }}"
 
 - name: Скачать путь панели Xray
   ansible.builtin.fetch:
@@ -173,8 +217,8 @@
              backup_seed_fetch.dest | default(''),
              backup_dnstt_fetch.dest | default(''),
              backup_dnstt_pub_fetch.dest | default(''),
-             backup_xui_fetch.dest | default(''),
              backup_xui_path_fetch.dest | default('')]
+          + (backup_sqlite_fetch.results | default([]) | map(attribute='dest', default='') | list)
           + (backup_rustdesk_fetch.results | default([]) | map(attribute='dest', default='') | list))
          | select | list }}
 
@@ -240,5 +284,5 @@
       затем make deploy HOST=<новый>
       ARGS="-e wireguard_restore_src={{ artifacts_dir }}/{{ inventory_hostname }}/{{ backup_wireguard_name }}".
       Остальное — так же, каталогом бэкапа: -e slipstream_restore_src=, dnstt_restore_src=, xui_restore_src=,
-      rustdesk_restore_src={{ artifacts_dir }}/{{ inventory_hostname }} — ссылки, профили, клиенты Reality
-      и ключ RustDesk останутся прежними (туннели — если домен тот же). Порядок — SERVER.md.
+      awg_restore_src=, rustdesk_restore_src={{ artifacts_dir }}/{{ inventory_hostname }} — ссылки, профили,
+      клиенты Reality и AmneziaWG, ключ RustDesk останутся прежними (туннели — если домен тот же). Порядок — SERVER.md.
