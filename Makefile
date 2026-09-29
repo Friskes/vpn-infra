@@ -74,7 +74,7 @@ $(INVENTORY):
 ssh-key: $(ANSIBLE) $(SSH_KEY)  ## Положить ssh-ключ на сервер по root-паролю, если не вставили при заказе
 	@bash tools/access.sh key "$(HOST)"
 
-admin: $(ANSIBLE) require-vault-key  ## Открыть админки wg-easy и 3x-ui и показать адреса и пароли
+admin: $(ANSIBLE) require-vault-key  ## Открыть админки wg-easy, AmneziaWG и 3x-ui и показать адреса и пароли
 	@bash tools/access.sh admin "$(HOST)"
 
 ssh: $(ANSIBLE)  ## Открыть консоль сервера

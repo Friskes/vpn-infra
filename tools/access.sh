@@ -13,6 +13,7 @@ cd "$REPO"
 KEY=keys/vpn-infra
 WG_LOCAL="${WG_LOCAL:-15821}"
 XUI_LOCAL="${XUI_LOCAL:-2053}"
+AWG_LOCAL="${AWG_LOCAL:-15831}"
 
 inventory_json="$(.venv/bin/ansible-inventory --list 2>/dev/null)"
 if [ -z "$HOST" ]; then
@@ -37,10 +38,10 @@ fi
 
 path="$("${SSH[@]}" 'cat /root/.x-ui/.base-path 2>/dev/null' || true)"
 secrets="$(.venv/bin/ansible "$HOST" -m ansible.builtin.debug \
-  -a '{"msg": "{{ wireguard_admin_password }}|{{ xui_admin_password }}|{{ xui_admin_user | default(\"admin\") }}"}' \
-  2>/dev/null | python3 -c 'import sys,re; m=re.search(r"\"msg\": \"([^\"]*)\"", sys.stdin.read()); print(m.group(1) if m else "||")' \
-  || echo "||")"
-IFS='|' read -r wg_pass xui_pass xui_user <<<"$secrets" || true
+  -a '{"msg": "{{ wireguard_admin_password }}|{{ xui_admin_password }}|{{ xui_admin_user | default(\"admin\") }}|{{ awg_enabled | default(false) }}"}' \
+  2>/dev/null | python3 -c 'import sys,re; m=re.search(r"\"msg\": \"([^\"]*)\"", sys.stdin.read()); print(m.group(1) if m else "|||")' \
+  || echo "|||")"
+IFS='|' read -r wg_pass xui_pass xui_user awg_on <<<"$secrets" || true
 
 cat <<EOF
 
@@ -49,6 +50,14 @@ cat <<EOF
   WireGuard (wg-easy)  http://127.0.0.1:$WG_LOCAL
                        пароль: ${wg_pass:-не найден, make show-secrets}
 EOF
+FORWARDS=(-L "$WG_LOCAL:127.0.0.1:51821" -L "$XUI_LOCAL:127.0.0.1:2053")
+if [ "$awg_on" = True ]; then
+  FORWARDS+=(-L "$AWG_LOCAL:127.0.0.1:51831")
+  cat <<EOF
+  AmneziaWG (wg-easy)  http://127.0.0.1:$AWG_LOCAL
+                       логин: admin  пароль: тот же, что у WireGuard
+EOF
+fi
 if [ -n "$path" ]; then
   cat <<EOF
   Reality (3x-ui)      http://127.0.0.1:$XUI_LOCAL$path
@@ -57,5 +66,4 @@ EOF
 fi
 echo
 echo "Закрыть доступ — Ctrl+C."
-exec "${SSH[@]}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -L "$WG_LOCAL:127.0.0.1:51821" -L "$XUI_LOCAL:127.0.0.1:2053"
+exec "${SSH[@]}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "${FORWARDS[@]}"

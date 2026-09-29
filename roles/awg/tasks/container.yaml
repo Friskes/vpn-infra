@@ -1,0 +1,40 @@
+---
+- name: Запустить контейнер AmneziaWG
+  community.docker.docker_container:
+    name: "{{ awg_container_name }}"
+    image: "{{ awg_image }}"
+    state: started
+    restart_policy: unless-stopped
+    memory: "{{ awg_memory_limit }}"
+    comparisons:
+      env: strict
+      capabilities: strict
+    env: "{{ awg_container_env }}"
+    volumes:
+      - "{{ awg_config_dir }}:/etc/wireguard"
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "{{ awg_vpn_port }}:{{ awg_vpn_port }}/udp"
+      - "{{ awg_admin_publish }}"
+    default_host_ip: ""
+    capabilities:
+      - CAP_NET_ADMIN
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv4.ip_forward: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "awg show | grep -q interface"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+  no_log: "{{ 'INIT_PASSWORD' in awg_container_env }}"
+
+- name: Дождаться API панели AmneziaWG
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ awg_admin_port }}/api/admin/userconfig"
+  register: awg_userconfig
+  until: awg_userconfig.status | default(0) == 200
+  retries: 30
+  delay: 3
+  when: not ansible_check_mode

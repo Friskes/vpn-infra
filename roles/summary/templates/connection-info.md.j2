@@ -19,6 +19,22 @@
 - Дальше: в админке создайте клиента, скачайте конфиг или отсканируйте QR в приложении.
 {% endif %}
 
+## AmneziaWG (wg-easy v15)
+{% if not awg_enabled | default(false) | bool %}
+На этом сервере выключен (`awg_enabled: false`). Это WireGuard с маскировкой от DPI — для тех,
+у кого провайдер режет обычный WireGuard.
+{% else %}
+{% if admin_public | bool %}
+- Админка: http://{{ server_ip }}:{{ awg_admin_port }} — открыта в интернет, закрыть: `admin_public: false` (SERVER.md)
+{% else %}
+- Админка: только через SSH-проброс — `make admin HOST={{ inventory_hostname }}`
+{% endif %}
+- Вход: логин `{{ awg_admin_user }}`, пароль тот же, что у wg-easy
+- VPN-порт: {{ awg_vpn_port }}/udp, адреса клиентов из {{ awg_ipv4_cidr }}
+- Клиенты свои, не те, что в wg-easy. Приложение — AmneziaWG (CLIENTS.md), обычный WireGuard
+  такой конфиг не откроет
+{% endif %}
+
 {% if not slipstream_enabled %}
 ## DNS-туннель (Slipstream)
 

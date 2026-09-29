@@ -1,0 +1,50 @@
+---
+awg_enabled: false
+
+awg_image: "ghcr.io/wg-easy/wg-easy:15.4.0"
+awg_container_name: "awg-easy"
+awg_config_dir: "/root/.awg-easy"
+awg_memory_limit: "256m"
+
+awg_host: "{{ wireguard_host }}"
+awg_vpn_port: ""
+awg_ipv4_cidr: "10.9.0.0/24"
+awg_ipv6_cidr: "fdcc:ad94:bacf:61a5::cafe:0/112"
+awg_dns: ["1.1.1.1"]
+awg_persistent_keepalive: 25
+
+awg_admin_port: 51831
+awg_admin_publish: >-
+  {{ '' if admin_public | bool else '127.0.0.1:' }}{{ awg_admin_port }}:{{ awg_admin_port }}/tcp
+awg_admin_user: "admin"
+awg_admin_password: "{{ wireguard_admin_password }}"
+
+awg_restore_src: ""
+
+awg_post_up: >-
+  iptables -t nat -A POSTROUTING -s {{ awg_ipv4_cidr }} -o eth0 -j MASQUERADE;
+  iptables -A INPUT -p udp -m udp --dport {{ awg_vpn_port }} -j ACCEPT;
+  iptables -A INPUT -i wg0 -p tcp --dport {{ awg_admin_port }} -j REJECT;
+  iptables -A FORWARD -i wg0 -d 172.16.0.0/12 -j REJECT;
+  iptables -A FORWARD -i wg0 -j ACCEPT;
+  iptables -A FORWARD -o wg0 -j ACCEPT;
+awg_post_down: "{{ awg_post_up | replace(' -A ', ' -D ') }}"
+
+awg_env:
+  EXPERIMENTAL_AWG: "true"
+  OVERRIDE_AUTO_AWG: "awg"
+  PORT: "{{ awg_admin_port | string }}"
+  HOST: "0.0.0.0"
+  INSECURE: "true"
+  DISABLE_IPV6: "true"
+  DISABLE_VERSION_CHECK: "true"
+
+awg_init_env:
+  INIT_ENABLED: "true"
+  INIT_USERNAME: "{{ awg_admin_user }}"
+  INIT_PASSWORD: "{{ awg_admin_password }}"
+  INIT_HOST: "{{ awg_host }}"
+  INIT_PORT: "{{ awg_vpn_port | string }}"
+  INIT_DNS: "{{ awg_dns | join(',') }}"
+  INIT_IPV4_CIDR: "{{ awg_ipv4_cidr }}"
+  INIT_IPV6_CIDR: "{{ awg_ipv6_cidr }}"

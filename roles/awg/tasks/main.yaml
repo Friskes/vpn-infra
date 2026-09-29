@@ -1,0 +1,156 @@
+---
+- name: Проверить настройки AmneziaWG
+  ansible.builtin.assert:
+    that:
+      - awg_admin_password | length >= 20
+      - awg_vpn_port | string | length > 0
+      - awg_vpn_port | int != wireguard_vpn_port | int
+    fail_msg: >-
+      Для AmneziaWG задайте в host_vars/{{ inventory_hostname }}/vars.yaml свой awg_vpn_port
+      (UDP, не порт WireGuard) и проверьте пароль админок в vault — не короче 20 символов.
+    quiet: true
+  when: awg_enabled | bool
+
+- name: Проверить, доступен ли Docker
+  ansible.builtin.stat:
+    path: /var/run/docker.sock
+  register: awg_docker_socket
+
+- name: Развернуть AmneziaWG
+  when:
+    - awg_enabled | bool
+    - awg_docker_socket.stat.exists
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ awg_admin_user }}"
+      url_password: "{{ awg_admin_password }}"
+      force_basic_auth: true
+  block:
+    - name: Загрузить модуль IPv4 NAT для AmneziaWG
+      community.general.modprobe:
+        name: iptable_nat
+        state: present
+        persistent: present
+
+    - name: Создать каталог состояния AmneziaWG
+      ansible.builtin.file:
+        path: "{{ awg_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Восстановить базу AmneziaWG из бэкапа
+      ansible.builtin.copy:
+        src: "{{ awg_restore_src }}/awg-easy.db"
+        dest: "{{ awg_config_dir }}/wg-easy.db"
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+      when:
+        - awg_restore_src | length > 0
+        - not ansible_check_mode
+
+    - name: Узнать, настроена ли уже панель AmneziaWG
+      ansible.builtin.stat:
+        path: "{{ awg_config_dir }}/wg-easy.db"
+      register: awg_db
+
+    - name: Запомнить, первый ли это запуск
+      ansible.builtin.set_fact:
+        awg_fresh: "{{ not awg_db.stat.exists }}"
+
+    - name: Скачать образ AmneziaWG заранее
+      community.docker.docker_image_pull:
+        name: "{{ awg_image }}"
+        pull: not_present
+
+    - name: Поднять AmneziaWG
+      ansible.builtin.import_tasks: container.yaml
+      vars:
+        awg_container_env: "{{ awg_env | combine(awg_init_env if awg_fresh | bool else {}) }}"
+
+    - name: Прочитать правила, интерфейс и настройки клиентов AmneziaWG
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ awg_admin_port }}/api/admin/{{ item }}"
+      loop: [hooks, interface, userconfig]
+      register: awg_current
+      when: not ansible_check_mode
+
+    - name: Задать правила интерфейса AmneziaWG
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ awg_admin_port }}/api/admin/hooks"
+        method: POST
+        body_format: json
+        body: "{{ awg_hooks }}"
+      register: awg_hooks_set
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - awg_current.results[0].json | dict2items | selectattr('key', 'in', awg_hooks) | items2dict != awg_hooks
+      vars:
+        awg_hooks: {preUp: "", postUp: "{{ awg_post_up }}", preDown: "", postDown: "{{ awg_post_down }}"}
+
+    - name: Задать порт интерфейса AmneziaWG
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ awg_admin_port }}/api/admin/interface"
+        method: POST
+        body_format: json
+        body: "{{ awg_current.results[1].json | combine({'port': awg_vpn_port | int}) }}"
+      register: awg_interface_set
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - awg_current.results[1].json.port != awg_vpn_port | int
+
+    - name: Задать настройки новых клиентов AmneziaWG
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ awg_admin_port }}/api/admin/userconfig"
+        method: POST
+        body_format: json
+        body: "{{ awg_current.results[2].json | combine(awg_userconfig_wanted) }}"
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - awg_current.results[2].json | combine(awg_userconfig_wanted) != awg_current.results[2].json
+      vars:
+        awg_userconfig_wanted: >-
+          {{ {'host': awg_host, 'port': awg_vpn_port | int, 'defaultDns': awg_dns,
+              'defaultPersistentKeepalive': awg_persistent_keepalive | int} }}
+
+    - name: Убрать пароль первичной настройки из окружения контейнера
+      ansible.builtin.import_tasks: container.yaml
+      vars:
+        awg_container_env: "{{ awg_env }}"
+      when: awg_fresh | bool
+
+    - name: Применить новые правила перезапуском AmneziaWG
+      ansible.builtin.command: docker restart {{ awg_container_name }}
+      changed_when: true
+      when:
+        - not awg_fresh | bool
+        - awg_hooks_set is changed or awg_interface_set is changed
+
+    - name: Подсказать, как войти в панель AmneziaWG
+      ansible.builtin.debug:
+        msg: >-
+          AmneziaWG слушает {{ awg_vpn_port }}/udp. Панель — make admin HOST={{ inventory_hostname }},
+          логин {{ awg_admin_user }}, пароль тот же, что у wg-easy.
+
+- name: Проверить, есть ли контейнер AmneziaWG
+  community.docker.docker_container_info:
+    name: "{{ awg_container_name }}"
+  register: awg_container
+  when:
+    - not awg_enabled | bool
+    - awg_docker_socket.stat.exists
+
+- name: Остановить AmneziaWG, если он выключен
+  community.docker.docker_container:
+    name: "{{ awg_container_name }}"
+    state: stopped
+  when:
+    - not awg_enabled | bool
+    - awg_container.exists | default(false)
+    - not ansible_check_mode

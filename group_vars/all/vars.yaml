@@ -19,6 +19,9 @@
 # Обычный VPN, веб-админка wg-easy. Нужен только адрес сервера.
 wireguard_enabled: true
 
+# WireGuard с маскировкой от DPI (AmneziaWG), своя панель и свои клиенты; нужен awg_vpn_port в host_vars.
+awg_enabled: false
+
 # Обход DPI: VLESS + Reality, панель 3x-ui. Домена не требует.
 # Против белых списков операторов бесполезен — см. OPERATORS.md.
 xui_enabled: true

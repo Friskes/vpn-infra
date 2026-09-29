@@ -29,6 +29,8 @@
       tags: [fail2ban]
     - role: wireguard
       tags: [wireguard]
+    - role: awg
+      tags: [awg]
     - role: slipstream
       tags: [slipstream]
     # Идёт после slipstream: обе роли заканчиваются на одном SOCKS, и порт 53

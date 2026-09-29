@@ -13,6 +13,7 @@ firewall_allowed_tcp_ports: >-
   {{ ([rustdesk_nat_test_port ~ ':' ~ rustdesk_relay_port] if rustdesk_enabled | bool else [])
      + ([xui_public_port] if xui_enabled | default(false) | bool else [])
      + ([wireguard_admin_port] if wireguard_enabled | default(true) | bool and admin_public | bool else [])
+     + ([awg_admin_port] if awg_enabled | default(false) | bool and admin_public | bool else [])
      + ([xui_admin_port] if xui_enabled | default(false) | bool and admin_public | bool else []) }}
 firewall_allowed_udp_ports: >-
   {{ ([rustdesk_id_port] if rustdesk_enabled | bool else [])

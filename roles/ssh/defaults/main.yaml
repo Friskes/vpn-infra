@@ -21,6 +21,7 @@ ssh_allow_tcp_forwarding: false
 
 ssh_permit_open: >-
   {{ ([wireguard_admin_port] if wireguard_enabled | default(true) | bool else [])
+     + ([awg_admin_port] if awg_enabled | default(false) | bool else [])
      + ([xui_admin_port] if xui_enabled | default(false) | bool else []) }}
 
 ssh_permit_root_login: "yes"

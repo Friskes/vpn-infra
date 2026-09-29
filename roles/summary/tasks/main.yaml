@@ -39,6 +39,9 @@
       {% if wireguard_enabled | default(true) | bool %}
       http://{{ server_ip }}:{{ wireguard_admin_port }}
       {% endif %}
+      {% if awg_enabled | default(false) | bool %}
+      http://{{ server_ip }}:{{ awg_admin_port }}
+      {% endif %}
       {% if xui_enabled | default(false) | bool %}
       http://{{ server_ip }}:{{ xui_admin_port }}{{ xui_effective_path | default('/<путь>/') }}
       {% endif %}

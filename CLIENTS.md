@@ -6,7 +6,8 @@
 | Канал | Windows | Android | macOS / iOS |
 |---|---|---|---|
 | WireGuard | [WireSock](#wireguard-на-windows--wiresock) | [Amnezia](#wireguard-на-android--amnezia) | [офиц. WireGuard](https://www.wireguard.com/install/) |
-| Reality (обход DPI) | [v2rayN](#reality-на-windows--v2rayn) | [v2rayNG](#reality-на-android--v2rayng) | [Hiddify](https://github.com/hiddify/hiddify-app) |
+| AmneziaWG | [Amnezia VPN](https://amnezia.org/downloads) | [AmneziaWG](#amneziawg) | [AmneziaWG](#amneziawg) |
+| Reality (обход DPI) | [v2rayN](#reality-на-windows--v2rayn) | [v2rayNG](#reality-на-android--v2rayng) | [Karing](#reality-на-iphone--karing) |
 | DNS-туннель | нет | [SlipNet](#dns-туннель--только-slipnet) | нет |
 | RustDesk | [офиц. клиент](https://rustdesk.com/) | [офиц. клиент](https://rustdesk.com/) | [офиц. клиент](https://rustdesk.com/) |
 
@@ -49,6 +50,19 @@ WireGuard по виду трафика, его не видит.
 Официальный [WireGuard для Android](https://play.google.com/store/apps/details?id=com.wireguard.android)
 тоже работает — но без обфускации и без списков приложений.
 
+## AmneziaWG
+
+Конфиг из панели AmneziaWG (роль `awg`, [SERVER.md](SERVER.md#amneziawg)) открывают только приложения
+Amnezia. Обычный WireGuard его не примет: в конфиге параметры маскировки (`Jc`, `S1`, `H1` и другие),
+и сервер без них не ответит.
+
+- iPhone и Mac — [AmneziaWG](https://apps.apple.com/ru/app/amneziawg/id6478942365), есть в российском App Store;
+- Android — [AmneziaWG](https://play.google.com/store/apps/details?id=org.amnezia.awg);
+- Windows — [Amnezia VPN](https://amnezia.org/downloads).
+
+Обычные конфиги wg-easy AmneziaWG тоже открывает, поэтому оба туннеля можно держать в одном
+приложении и переключаться между ними.
+
 ## Reality на Android — v2rayNG
 
 [v2rayNG](https://github.com/2dust/v2rayNG) — стандартный клиент Xray для Android,
@@ -64,6 +78,16 @@ Windows. Ссылка `vless://…` вставляется из буфера о�
 
 Кому нужен один клиент на все платформы сразу — [Hiddify](https://github.com/hiddify/hiddify-app):
 Windows, macOS, Linux, Android, iOS, тот же набор протоколов, интерфейс проще.
+
+## Reality на iPhone — Karing
+
+Hiddify в российском App Store нет (проверено 29.09.2026), поэтому на iPhone —
+[Karing](https://apps.apple.com/ru/app/karing/id6472431552): бесплатный, тот же движок sing-box,
+[исходники на GitHub](https://github.com/KaringX/karing). Ссылка `vless://…` добавляется из буфера
+обмена. Платная замена — [Shadowrocket](https://apps.apple.com/ru/app/shadowrocket/id932747118).
+
+В поиске App Store много приложений с похожими названиями от неизвестных продавцов —
+ставить по ссылкам выше.
 
 > [!CAUTION]
 > **NekoRay и NekoBox ставить не надо.** Репозиторий
@@ -103,11 +127,12 @@ Windows, macOS, Linux, Android, iOS, тот же набор протоколов
 | Канал | Где взять |
 |---|---|
 | WireGuard | админка wg-easy: создать клиента → скачать `.conf` или снять QR-код |
+| AmneziaWG | панель AmneziaWG: так же, клиенты у неё свои |
 | Reality | панель 3x-ui: «Клиенты» → иконка «QR-код» у клиента — ссылка `vless://` и QR |
 | DNS-туннель | на сервере (`make ssh`): `slipnet-user add <имя>` печатает ссылку `slipnet://` |
 | RustDesk | адрес сервера и Public Key — в `artifacts/<сервер>/CONNECTION_INFO.md` |
 
-Обе админки — wg-easy и 3x-ui — по умолчанию снаружи закрыты. Открывает их `make admin`
+Админки — wg-easy, AmneziaWG и 3x-ui — по умолчанию снаружи закрыты. Открывает их `make admin`
 на вашем компьютере: печатает адреса и пароли и держит доступ, пока окно открыто.
 Подробнее и про открытие в интернет — [SERVER.md](SERVER.md#доступ-к-админкам).
 
